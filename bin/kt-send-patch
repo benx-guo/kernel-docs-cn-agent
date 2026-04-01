@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib.project import root, kernel_dir, outgoing_dir, series_state_path, config_dir
 from lib.git_helpers import user_email, series_id_from_branch, is_work_branch
 from lib.patch import run_get_maintainer
-from lib.state import load_series_state, add_round
+from lib.state import load_series_state, get_series, add_round
 
 
 def find_patches(series_id=None):
@@ -91,6 +91,56 @@ def send_email(to_list, cc_list, patches, dry_run=False, in_reply_to=None):
     return r.returncode, r.stdout, r.stderr
 
 
+def lookup_prev_recipients(series_id):
+    """Look up To/Cc from the previous round's cover letter via local notmuch."""
+    if not shutil.which("notmuch"):
+        return None, None
+    s = get_series(series_state_path(), series_id)
+    if not s:
+        return None, None
+    # Find the cover message-id from the last sent round
+    cover_mid = None
+    for pk in ("upstream", "internal_review"):
+        rounds = s["phases"].get(pk, {}).get("rounds", [])
+        if rounds:
+            cover_mid = rounds[-1].get("cover_message_id")
+            break
+    if not cover_mid:
+        return None, None
+    # Query notmuch for headers
+    r = subprocess.run(
+        ["notmuch", "show", "--format=json", f"id:{cover_mid}"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return None, None
+    import json as _json
+    try:
+        data = _json.loads(r.stdout)
+    except _json.JSONDecodeError:
+        return None, None
+    # Walk to find headers
+    def find_headers(obj):
+        if isinstance(obj, dict):
+            h = obj.get("headers", {})
+            if h.get("To") or h.get("Cc"):
+                return h
+        if isinstance(obj, list):
+            for item in obj:
+                found = find_headers(item)
+                if found:
+                    return found
+        return None
+    hdrs = find_headers(data)
+    if not hdrs:
+        return None, None
+    to_raw = hdrs.get("To", "")
+    cc_raw = hdrs.get("Cc", "")
+    to_list = [a.strip() for a in to_raw.split(",") if a.strip()] if to_raw else []
+    cc_list = [a.strip() for a in cc_raw.split(",") if a.strip()] if cc_raw else []
+    return to_list, cc_list
+
+
 def extract_message_id(output):
     """Extract Message-ID from git send-email output."""
     for line in output.splitlines():
@@ -149,10 +199,13 @@ def main():
     elif "--review" in args:
         mode = "review"
         idx = args.index("--review")
-        review_email = args[idx + 1] if idx + 1 < len(args) else conf.get("REVIEW_EMAIL")
-        if not review_email:
-            print("错误: --review 需要邮箱地址", file=sys.stderr)
-            sys.exit(1)
+        next_arg = args[idx + 1] if idx + 1 < len(args) else None
+        # next_arg is an email if it doesn't start with --
+        review_email = None
+        if next_arg and not next_arg.startswith("--"):
+            review_email = next_arg
+        elif conf.get("REVIEW_EMAIL"):
+            review_email = conf["REVIEW_EMAIL"]
     elif "--submit" in args:
         mode = "submit"
     else:
@@ -170,8 +223,23 @@ def main():
     if mode == "self":
         to_list = [email]
     elif mode == "review":
-        to_list = [review_email]
-        cc_list = [email]
+        if review_email:
+            to_list = [review_email]
+        elif series_id:
+            # Auto-detect from previous round's local mail
+            prev_to, prev_cc = lookup_prev_recipients(series_id)
+            if prev_to:
+                to_list = prev_to
+                cc_list = prev_cc or []
+            else:
+                print("错误: 无法从上一轮邮件获取收件人，请手动指定: --review EMAIL",
+                      file=sys.stderr)
+                sys.exit(1)
+        else:
+            print("错误: --review 需要邮箱地址或 --series ID", file=sys.stderr)
+            sys.exit(1)
+        # Remove self from cc
+        cc_list = [a for a in cc_list if email not in a]
     elif mode == "submit":
         # Collect from get_maintainer
         kd = kernel_dir()
