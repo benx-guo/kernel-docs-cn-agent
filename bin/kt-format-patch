@@ -79,10 +79,11 @@ def main():
             print(msg)
         sys.exit(1)
 
-    # Determine output directory: outgoing/<series-id>/ or outgoing/
+    # Determine output directory: outgoing/<series-id>/v<N>/ or outgoing/
     od_base = outgoing_dir()
+    ver = version if version else 1
     if series_id:
-        od = od_base / series_id
+        od = od_base / series_id / f"v{ver}"
     else:
         od = od_base
     if od.is_dir():
@@ -142,6 +143,29 @@ def main():
             commit_hashes = git_lines("log", "--format=%h", "docs-next..HEAD")
             ss["series"][series_id]["commits"] = commit_hashes
             save_series_state(series_state_path(), ss)
+
+    # Auto-generate previous version patches if missing
+    if series_id and ver > 1:
+        prev_dir = od_base / series_id / f"v{ver - 1}"
+        if not prev_dir.is_dir():
+            ss = load_series_state(series_state_path())
+            s = ss.get("series", {}).get(series_id)
+            if s:
+                for pk in ("upstream", "internal_review"):
+                    rounds = s["phases"].get(pk, {}).get("rounds", [])
+                    if rounds:
+                        prev_tip = rounds[-1].get("tip")
+                        prev_base = rounds[-1].get("base", "docs-next")
+                        if prev_tip:
+                            prev_dir.mkdir(parents=True)
+                            prev_ver = rounds[-1].get("version", ver - 1)
+                            format_patch(
+                                base=prev_base, tip=prev_tip,
+                                output_dir=prev_dir,
+                                cover_letter=cover_letter,
+                                version=prev_ver if prev_ver > 1 else None,
+                            )
+                        break
 
     # Switch back to original branch
     if series_branch and orig_branch != series_branch:

@@ -239,13 +239,14 @@ def is_ancestor(commit: str, branch: str = "docs-next",
 
 def format_patch(
     base: str = "docs-next",
+    tip: str = "HEAD",
     output_dir: str | Path = ".",
     cover_letter: bool = False,
     version: int | None = None,
     cwd: str | Path | None = None,
 ) -> list[str]:
     """Run git format-patch and return list of generated patch filenames."""
-    args = ["format-patch", f"{base}..HEAD", "-o", str(output_dir)]
+    args = ["format-patch", f"{base}..{tip}", "-o", str(output_dir)]
     if cover_letter:
         args += ["--cover-letter", "--thread=shallow"]
     if version is not None and version > 1:

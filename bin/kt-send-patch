@@ -31,13 +31,23 @@ from lib.state import load_series_state, add_round
 def find_patches(series_id=None):
     """Find patch files in outgoing/.
 
-    If *series_id* is given, look in ``outgoing/<series_id>/``.
-    Falls back to ``outgoing/*.patch`` for backward compatibility.
+    Looks in ``outgoing/<series_id>/v<latest>/`` first,
+    falls back to ``outgoing/<series_id>/*.patch``,
+    then ``outgoing/*.patch``.
     """
     od = outgoing_dir()
     if series_id:
         series_dir = od / series_id
         if series_dir.is_dir():
+            # Find latest version subdirectory
+            ver_dirs = sorted(
+                [d for d in series_dir.iterdir()
+                 if d.is_dir() and d.name.startswith("v") and d.name[1:].isdigit()],
+                key=lambda d: int(d.name[1:]),
+            )
+            if ver_dirs:
+                return sorted(ver_dirs[-1].glob("*.patch"))
+            # Fallback: flat patches in series dir
             return sorted(series_dir.glob("*.patch"))
     # Fallback: flat outgoing/*.patch
     if not od.is_dir():
