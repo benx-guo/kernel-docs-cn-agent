@@ -28,6 +28,19 @@ cd <ROOT> && python3 bin/kt-series --show <id> --json
 cd <ROOT> && python3 bin/kt-series --create --json
 ```
 
+创建时自动：
+- 生成 `zh-work/<series-id>` 工作分支（基于 `docs-next`）
+- 如果当前分支有该模块的 commit，cherry-pick 到新分支
+- 将 `branch` 字段写入 series-state
+
+### `--delete <id>`
+
+删除 series 及其工作分支：
+
+```bash
+cd <ROOT> && python3 bin/kt-series --delete <id> --json
+```
+
 ### `--dashboard`
 
 ```bash
@@ -97,12 +110,19 @@ cd <ROOT> && python3 bin/kt-series --show <id> --json
 
 ---
 
-## `--advance [id]` — 推进阶段
+## `--advance <id>` — 推进阶段
+
+```bash
+cd <ROOT> && python3 bin/kt-series --advance <id> --json
+```
 
 ### 内审 → 上游
 
 **前置条件**：phase=internal_review, status=approved。
 
+自动将 phase 设为 `upstream`。
+
+推进后，AI 应完成以下步骤：
 1. 收集所有 Reviewed-by（从 series-state.json 最新 round）
 2. Soft reset commits：
    ```bash
@@ -111,13 +131,15 @@ cd <ROOT> && python3 bin/kt-series --show <id> --json
 3. 对每个文件重新 commit，带 Reviewed-by tag
 4. 重新 format-patch：
    ```bash
-   cd <ROOT> && python3 bin/kt-format-patch --json
+   cd <ROOT> && python3 bin/kt-format-patch --series <id> --json
    ```
-5. 更新 series-state：phase → upstream
 
 ### 上游 → 合并
 
-phase = "merged"，汇报完成。
+**自动检测**：检查 series 的所有 commits 是否已被 `docs-next` 包含（`is_ancestor`）。
+
+- 如果已合并：标记 phase="merged"，工作分支保留，需用 `--delete <id>` 手动清理
+- 如果未合并：报错退出，提示补丁尚未被合并
 
 ### 安全确认
 

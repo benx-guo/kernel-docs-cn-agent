@@ -23,6 +23,7 @@ from lib.project import (
     glossary_path, workflow_state_path, series_state_path,
 )
 from lib.state import load_workflow_state, load_series_state
+from lib.git_helpers import list_work_branches
 
 
 def check_deps():
@@ -87,17 +88,10 @@ def clone_or_update():
 
 
 def setup_work_branch():
-    """Create or checkout the work branch."""
+    """Ensure docs-next is checked out. Work branches are created by kt-series."""
     kd = kernel_dir()
-    r = subprocess.run(["git", "rev-parse", "--verify", "zh-translation-work"],
-                       cwd=kd, capture_output=True, text=True)
-    if r.returncode == 0:
-        subprocess.run(["git", "checkout", "zh-translation-work"], cwd=kd, check=False)
-        return "checked_out"
-    else:
-        subprocess.run(["git", "checkout", "-b", "zh-translation-work", "docs-next"],
-                       cwd=kd, check=True)
-        return "created"
+    subprocess.run(["git", "checkout", "docs-next"], cwd=kd, check=False)
+    return "docs-next"
 
 
 def get_status():
@@ -134,8 +128,13 @@ def get_status():
             phase = s["phase"]
             st = s["phases"].get(phase, {}).get("status", "?")
             active.append({"id": sid, "phase": phase, "status": st,
-                           "files": len(s.get("files", []))})
+                           "files": len(s.get("files", [])),
+                           "branch": s.get("branch", "")})
     status["active_series"] = active
+
+    # Work branches
+    if status["kernel_exists"]:
+        status["work_branches"] = list_work_branches()
 
     return status
 
@@ -175,10 +174,15 @@ def main():
                 print(f"英文文件: {status['en_files']}")
                 print(f"中文文件: {status['zh_files']}")
                 print(f"覆盖率: {status['coverage']}%")
+                if status.get("work_branches"):
+                    print(f"\n工作分支:")
+                    for b in status["work_branches"]:
+                        print(f"  {b}")
                 if status["active_series"]:
                     print("\n活跃系列:")
                     for s in status["active_series"]:
-                        print(f"  {s['id']}: {s['phase']}/{s['status']} ({s['files']} files)")
+                        branch_info = f" [{s['branch']}]" if s.get("branch") else ""
+                        print(f"  {s['id']}: {s['phase']}/{s['status']} ({s['files']} files){branch_info}")
             else:
                 print("内核仓库: 未克隆")
         sys.exit(0)
@@ -204,12 +208,13 @@ def main():
         }, indent=2, ensure_ascii=False))
     else:
         print(f"仓库: {repo_action}")
-        print(f"工作分支: {branch_action}")
+        print(f"基准分支: {branch_action}")
         print(f"分支: {status.get('branch', '?')}")
         print(f"HEAD: {status.get('head', '?')}")
         print(f"英文文件: {status.get('en_files', '?')}")
         print(f"中文文件: {status.get('zh_files', '?')}")
         print(f"覆盖率: {status.get('coverage', '?')}%")
+        print(f"\n工作分支由 kt-series --create 按需创建。")
 
 
 if __name__ == "__main__":

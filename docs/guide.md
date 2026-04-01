@@ -33,12 +33,15 @@
 
 ## 典型工作流
 
-1. `bin/kt-setup` — 克隆仓库、创建工作分支
+1. `bin/kt-setup` — 克隆仓库、确保 `docs-next` 最新
 2. `bin/kt-diff --status` — 找需要翻译/更新的文件
-3. 翻译（按 `docs/skills/translate.md` + `docs/translation-rules.md`）
-4. `bin/kt-check --file <path>` — 质量检查
-5. `bin/kt-format-patch` — 生成补丁 + checkpatch + htmldocs 验证
-6. `bin/kt-send-patch --self` → `--review` → `--submit`
+3. `bin/kt-series --create` — 创建 series + 工作分支（`zh-work/<id>`）
+4. 翻译（按 `docs/skills/translate.md` + `docs/translation-rules.md`）
+5. `bin/kt-check --file <path>` — 质量检查
+6. `bin/kt-format-patch --series <id>` — 生成补丁到 `outgoing/<id>/`
+7. `bin/kt-send-patch --self --series <id>` → `--review` → `--submit`
+
+每个翻译模块有独立分支，commit 和补丁互不干扰，可并行翻译多个模块。
 
 全流程编排：按 `docs/skills/work.md`，12 阶段自动驱动。
 

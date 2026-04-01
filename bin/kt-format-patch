@@ -17,7 +17,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib.project import root, kernel_dir, outgoing_dir, series_state_path
-from lib.git_helpers import git_lines, git_stdout, format_patch
+from lib.git_helpers import (
+    git_lines, git_stdout, format_patch, current_branch, checkout,
+    series_id_from_branch, is_work_branch, ensure_clean_worktree,
+)
 from lib.patch import run_checkpatch, run_get_maintainer, run_htmldocs
 from lib.state import load_series_state, save_series_state
 
@@ -39,11 +42,18 @@ def main():
         idx = args.index("--series")
         series_id = args[idx + 1] if idx + 1 < len(args) else None
 
-    # Read version from series-state if needed
+    # Auto-detect series from current branch
+    if not series_id and is_work_branch():
+        series_id = series_id_from_branch()
+
+    # Resolve series branch and switch if needed
+    orig_branch = current_branch()
+    series_branch = None
     if series_id:
         ss = load_series_state(series_state_path())
         s = ss.get("series", {}).get(series_id)
         if s:
+            series_branch = s.get("branch")
             phase = s["phase"]
             rounds = s["phases"].get(phase, {}).get("rounds", [])
             if rounds:
@@ -51,9 +61,17 @@ def main():
             elif phase == "upstream":
                 version = None  # upstream v1, no reroll
 
+    # Switch to series branch if needed
+    if series_branch and current_branch() != series_branch:
+        ensure_clean_worktree()
+        checkout(series_branch)
+
     # Check for commits
     commits = git_lines("log", "--oneline", "docs-next..HEAD")
     if not commits:
+        # Switch back before exiting
+        if series_branch and orig_branch != series_branch:
+            checkout(orig_branch)
         msg = "没有提交。请先 commit 翻译文件。"
         if use_json:
             print(json.dumps({"error": msg}))
@@ -61,8 +79,12 @@ def main():
             print(msg)
         sys.exit(1)
 
-    # Clean and create output dir
-    od = outgoing_dir()
+    # Determine output directory: outgoing/<series-id>/ or outgoing/
+    od_base = outgoing_dir()
+    if series_id:
+        od = od_base / series_id
+    else:
+        od = od_base
     if od.is_dir():
         shutil.rmtree(od)
     od.mkdir(parents=True)
@@ -120,6 +142,10 @@ def main():
             commit_hashes = git_lines("log", "--format=%h", "docs-next..HEAD")
             ss["series"][series_id]["commits"] = commit_hashes
             save_series_state(series_state_path(), ss)
+
+    # Switch back to original branch
+    if series_branch and orig_branch != series_branch:
+        checkout(orig_branch)
 
     output = {
         "patches": patch_info,

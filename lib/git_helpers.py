@@ -43,6 +43,80 @@ def head_oneline(cwd: str | Path | None = None) -> str:
     return git_stdout("log", "--oneline", "-1", cwd=cwd)
 
 
+# ── Branch operations ─────────────────────────────────────────────
+
+WORK_BRANCH_PREFIX = "zh-work/"
+
+
+def branch_exists(name: str, cwd: str | Path | None = None) -> bool:
+    """Check if a local branch exists."""
+    r = git("rev-parse", "--verify", name, cwd=cwd)
+    return r.returncode == 0
+
+
+def create_branch(name: str, base: str = "docs-next",
+                  cwd: str | Path | None = None) -> None:
+    """Create a new branch from *base*. Raises on failure."""
+    r = git("branch", name, base, cwd=cwd)
+    if r.returncode != 0:
+        raise RuntimeError(f"git branch {name} {base} failed: {r.stderr.strip()}")
+
+
+def checkout(branch: str, cwd: str | Path | None = None) -> None:
+    """Switch to *branch*. Raises on failure."""
+    r = git("checkout", branch, cwd=cwd)
+    if r.returncode != 0:
+        raise RuntimeError(f"git checkout {branch} failed: {r.stderr.strip()}")
+
+
+def delete_branch(name: str, cwd: str | Path | None = None) -> None:
+    """Delete a local branch. Raises on failure."""
+    r = git("branch", "-D", name, cwd=cwd)
+    if r.returncode != 0:
+        raise RuntimeError(f"git branch -D {name} failed: {r.stderr.strip()}")
+
+
+def is_work_branch(branch: str | None = None,
+                   cwd: str | Path | None = None) -> bool:
+    """Check if *branch* (default: current) is a zh-work/* branch."""
+    if branch is None:
+        branch = current_branch(cwd=cwd)
+    return branch.startswith(WORK_BRANCH_PREFIX)
+
+
+def series_id_from_branch(branch: str | None = None,
+                          cwd: str | Path | None = None) -> str | None:
+    """Extract series-id from a zh-work/<series-id> branch name.
+
+    Returns None if the branch is not a work branch.
+    """
+    if branch is None:
+        branch = current_branch(cwd=cwd)
+    if branch.startswith(WORK_BRANCH_PREFIX):
+        return branch[len(WORK_BRANCH_PREFIX):]
+    return None
+
+
+def work_branch_name(series_id: str) -> str:
+    """Return the branch name for a series-id."""
+    return f"{WORK_BRANCH_PREFIX}{series_id}"
+
+
+def list_work_branches(cwd: str | Path | None = None) -> list[str]:
+    """Return all zh-work/* branch names."""
+    lines = git_lines("branch", "--list", f"{WORK_BRANCH_PREFIX}*", cwd=cwd)
+    # git branch prefixes current branch with "* " and others with "  "
+    return [l.strip().removeprefix("* ") for l in lines]
+
+
+def ensure_clean_worktree(cwd: str | Path | None = None) -> None:
+    """Raise if the working tree has uncommitted changes."""
+    r = git("diff", "--quiet", cwd=cwd)
+    r2 = git("diff", "--cached", "--quiet", cwd=cwd)
+    if r.returncode != 0 or r2.returncode != 0:
+        raise RuntimeError("工作区有未提交的更改，请先 commit 或 stash。")
+
+
 def user_name(cwd: str | Path | None = None) -> str:
     return git_stdout("config", "user.name", cwd=cwd)
 

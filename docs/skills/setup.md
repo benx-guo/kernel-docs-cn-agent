@@ -13,7 +13,7 @@
 cd <ROOT> && python3 bin/kt-setup
 ```
 
-如果仓库不存在，这会自动克隆 Alex Shi 的 `docs-next` 分支（约 200 层深度），创建 `zh-translation-work` 工作分支，并初始化目录结构。
+如果仓库不存在，这会自动克隆 Alex Shi 的 `docs-next` 分支（约 200 层深度）并初始化目录结构。工作分支由 `kt-series --create` 按需创建（`zh-work/<series-id>`）。
 
 ## 步骤 2：依赖检查
 

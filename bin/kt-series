@@ -2,12 +2,15 @@
 """kt-series — Patch series lifecycle management.
 
 Usage:
-    kt-series [--list | --show ID | --create | --dashboard] [--json]
+    kt-series [--list | --show ID | --create | --delete ID | --advance ID | --current | --dashboard] [--json]
 
 Options:
     --list          List active series (default)
     --show ID       Show detailed status for a series
     --create        Create a new series from current commits
+    --delete ID     Delete a series and its work branch
+    --advance ID    Advance series to the next phase
+    --current       Show status of the series on the current branch
     --dashboard     Show full dashboard view
     --json          Output JSON
 """
@@ -18,10 +21,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib.project import kernel_dir, outgoing_dir, series_state_path
-from lib.git_helpers import git_lines
+from lib.git_helpers import (
+    git_lines, current_branch, branch_exists, create_branch,
+    checkout, delete_branch, work_branch_name, series_id_from_branch,
+    is_work_branch, is_ancestor,
+)
 from lib.state import (
     load_series_state, save_series_state, list_active_series,
-    get_series, create_series,
+    get_series, create_series, delete_series,
+    update_series_field, update_phase_status,
 )
 
 
@@ -74,6 +82,8 @@ def do_list(use_json):
 
         print(f"{sid}")
         print(f"  主题: {s.get('subject', '?')}")
+        if s.get("branch"):
+            print(f"  分支: {s['branch']}")
         print(f"  阶段: {phase} / {status}")
         print(f"  文件: {len(s.get('files', []))} 个")
         print(f"  版本: {version}")
@@ -103,6 +113,8 @@ def do_show(series_id, use_json):
 
     print(f"系列: {series_id}")
     print(f"主题: {s.get('subject', '?')}")
+    if s.get("branch"):
+        print(f"分支: {s['branch']}")
     print(f"阶段: {phase} / {phase_data.get('status', '?')}")
     print(f"文件: {', '.join(s.get('files', []))}")
     print(f"Commits: {', '.join(s.get('commits', []))}")
@@ -138,17 +150,11 @@ def do_show(series_id, use_json):
 
 def do_create(use_json):
     """Create a new series from current commits and outgoing patches."""
+    # Check for commits on current branch (or docs-next..HEAD)
     commits = git_lines("log", "--oneline", "docs-next..HEAD")
-    if not commits:
-        msg = "没有 commit。请先提交翻译。"
-        if use_json:
-            print(json.dumps({"error": msg}))
-        else:
-            print(msg, file=sys.stderr)
-        sys.exit(1)
 
-    # Extract files from commits
-    files_raw = git_lines("log", "--name-only", "--format=", "docs-next..HEAD")
+    # Extract files from commits (may be empty if creating before committing)
+    files_raw = git_lines("log", "--name-only", "--format=", "docs-next..HEAD") if commits else []
     zh_files = sorted(set(
         f.replace("Documentation/translations/zh_CN/", "")
         for f in files_raw
@@ -158,7 +164,6 @@ def do_create(use_json):
     commit_hashes = [line.split()[0] for line in commits]
 
     # Generate series ID
-    import re
     from datetime import datetime, timezone
     subdirs = set()
     for f in zh_files:
@@ -169,24 +174,258 @@ def do_create(use_json):
     date_suffix = datetime.now(timezone.utc).strftime("%Y-%m")
     series_id = f"{subdir_name}-{date_suffix}"
 
+    # Deduplicate: if series_id already exists, append a counter
+    ss = load_series_state(series_state_path())
+    existing = ss.get("series", {})
+    if series_id in existing:
+        counter = 2
+        while f"{series_id}-{counter}" in existing:
+            counter += 1
+        series_id = f"{series_id}-{counter}"
+
     # Subject
     if len(zh_files) == 1:
         subject = f"docs/zh_CN: translate {zh_files[0]}"
-    else:
+    elif zh_files:
         subject = f"docs/zh_CN: update {subdir_name}/ subsystem translations"
+    else:
+        subject = f"docs/zh_CN: {subdir_name} translations"
 
-    create_series(series_state_path(), series_id, subject, zh_files, commit_hashes)
+    # Create work branch zh-work/<series-id> from docs-next
+    branch = work_branch_name(series_id)
+    if not branch_exists(branch):
+        create_branch(branch, base="docs-next")
+
+    # If current branch has commits for this module, cherry-pick them
+    orig_branch = current_branch()
+    if commits and orig_branch != branch:
+        checkout(branch)
+        for h in reversed(commit_hashes):
+            from lib.git_helpers import git
+            r = git("cherry-pick", h)
+            if r.returncode != 0:
+                # Abort failed cherry-pick and continue
+                git("cherry-pick", "--abort")
+        # Re-read commits on the new branch
+        new_commits = git_lines("log", "--oneline", "docs-next..HEAD")
+        commit_hashes = [line.split()[0] for line in new_commits]
+    elif not commits:
+        # No commits yet, just switch to the new branch
+        checkout(branch)
+
+    create_series(series_state_path(), series_id, subject, zh_files,
+                  commit_hashes, branch=branch)
 
     result = {"id": series_id, "subject": subject, "files": zh_files,
-              "commits": commit_hashes}
+              "commits": commit_hashes, "branch": branch}
 
     if use_json:
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
         print(f"已创建系列: {series_id}")
+        print(f"  分支: {branch}")
         print(f"  主题: {subject}")
         print(f"  文件: {len(zh_files)} 个")
         print(f"  Commits: {len(commit_hashes)} 个")
+
+
+def do_delete(series_id, use_json):
+    """Delete a series and its work branch."""
+    s = get_series(series_state_path(), series_id)
+    if not s:
+        msg = f"系列 '{series_id}' 不存在"
+        if use_json:
+            print(json.dumps({"error": msg}))
+        else:
+            print(msg, file=sys.stderr)
+        sys.exit(1)
+
+    branch = s.get("branch")
+    branch_deleted = False
+
+    # Switch away from the branch if we're on it
+    if branch and branch_exists(branch):
+        cur = current_branch()
+        if cur == branch:
+            checkout("docs-next")
+        delete_branch(branch)
+        branch_deleted = True
+
+    # Remove series from state
+    delete_series(series_state_path(), series_id)
+
+    result = {"id": series_id, "deleted": True, "branch_deleted": branch_deleted}
+    if use_json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        print(f"已删除系列: {series_id}")
+        if branch_deleted:
+            print(f"  已删除分支: {branch}")
+
+
+def do_advance(series_id, use_json):
+    """Advance a series to the next phase.
+
+    internal_review (approved) -> upstream
+    upstream -> merged  (auto-detects if commits are in docs-next)
+    """
+    ssp = series_state_path()
+    s = get_series(ssp, series_id)
+    if not s:
+        msg = f"系列 '{series_id}' 不存在"
+        if use_json:
+            print(json.dumps({"error": msg}))
+        else:
+            print(msg, file=sys.stderr)
+        sys.exit(1)
+
+    phase = s["phase"]
+
+    if phase == "internal_review":
+        # internal_review -> upstream
+        phase_data = s["phases"].get("internal_review", {})
+        status = phase_data.get("status", "")
+        if status != "approved":
+            msg = (f"内审阶段状态为 '{status}'，需要 'approved' 才能推进。"
+                   if status else "内审阶段尚未开始。")
+            if use_json:
+                print(json.dumps({"error": msg, "phase": phase, "status": status}))
+            else:
+                print(msg, file=sys.stderr)
+            sys.exit(1)
+
+        update_series_field(ssp, series_id, phase="upstream")
+        update_phase_status(ssp, series_id, "upstream", "pending")
+
+        result = {"id": series_id, "action": "advance",
+                  "from": "internal_review", "to": "upstream"}
+        if use_json:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            print(f"已推进: {series_id}")
+            print(f"  internal_review → upstream")
+
+    elif phase == "upstream":
+        # upstream -> merged
+        # Check if commits are in docs-next
+        commits = s.get("commits", [])
+        all_merged = False
+        if commits:
+            all_merged = all(is_ancestor(c, "docs-next") for c in commits)
+
+        if not all_merged and commits:
+            msg = "补丁尚未被 docs-next 合并。"
+            if use_json:
+                print(json.dumps({"error": msg, "phase": phase,
+                                  "merged": False, "commits": commits}))
+            else:
+                print(msg, file=sys.stderr)
+            sys.exit(1)
+
+        update_series_field(ssp, series_id, phase="merged")
+        update_phase_status(ssp, series_id, "upstream", "merged")
+
+        branch = s.get("branch")
+        result = {"id": series_id, "action": "advance",
+                  "from": "upstream", "to": "merged",
+                  "branch": branch}
+        if use_json:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            print(f"已推进: {series_id}")
+            print(f"  upstream → merged")
+            if branch:
+                print(f"  工作分支 {branch} 仍保留，可用 --delete {series_id} 清理")
+
+    elif phase == "merged":
+        msg = "该系列已经是 merged 状态。"
+        if use_json:
+            print(json.dumps({"error": msg, "phase": phase}))
+        else:
+            print(msg, file=sys.stderr)
+        sys.exit(1)
+
+    else:
+        msg = f"未知阶段: {phase}"
+        if use_json:
+            print(json.dumps({"error": msg}))
+        else:
+            print(msg, file=sys.stderr)
+        sys.exit(1)
+
+
+def do_current(use_json):
+    """Show status of the series on the current branch."""
+    sid = series_id_from_branch()
+    if not sid:
+        branch = current_branch()
+        msg = f"当前分支 '{branch}' 不是 zh-work/* 工作分支。"
+        if use_json:
+            print(json.dumps({"error": msg, "branch": branch}))
+        else:
+            print(msg, file=sys.stderr)
+        sys.exit(1)
+
+    s = get_series(series_state_path(), sid)
+    if not s:
+        msg = f"当前分支对应的系列 '{sid}' 在 series-state 中不存在。"
+        if use_json:
+            print(json.dumps({"error": msg, "series_id": sid}))
+        else:
+            print(msg, file=sys.stderr)
+        sys.exit(1)
+
+    phase = s["phase"]
+    phase_data = s["phases"].get(phase, {})
+    status = phase_data.get("status", "?")
+    rounds = phase_data.get("rounds", [])
+
+    # Count action items
+    action_items = []
+    if rounds:
+        for num in sorted(rounds[-1].get("per_patch", {}).keys(), key=lambda x: int(x)):
+            p = rounds[-1]["per_patch"][num]
+            for item in p.get("action_items", []):
+                action_items.append((num, p["file"], item))
+
+    # Commit count
+    commits = git_lines("log", "--oneline", "docs-next..HEAD")
+
+    # Lifecycle bar
+    idx = PHASE_INDEX.get(phase, 0)
+    lifecycle_parts = []
+    for i, name in enumerate(LIFECYCLE):
+        if i == idx:
+            lifecycle_parts.append(f"【{name}】")
+        elif i < idx:
+            lifecycle_parts.append(f"{name} ✓")
+        else:
+            lifecycle_parts.append(name)
+
+    if use_json:
+        result = {
+            "series_id": sid,
+            "subject": s.get("subject", ""),
+            "branch": s.get("branch", ""),
+            "phase": phase,
+            "status": status,
+            "files": s.get("files", []),
+            "commits": len(commits),
+            "version": rounds[-1]["version"] if rounds else 0,
+            "action_items": [{"patch": n, "file": f, "item": t}
+                             for n, f, t in action_items],
+        }
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return
+
+    version = f"v{rounds[-1]['version']}" if rounds else "-"
+    print(f"  {sid}  {phase}/{status}  {version}  "
+          f"{len(s.get('files', []))} 文件  {len(commits)} commits")
+    print(f"  " + " → ".join(lifecycle_parts))
+    if action_items:
+        print(f"  待办 ({len(action_items)}):")
+        for num, fname, item in action_items:
+            print(f"    [{num}] {fname}: {item}")
 
 
 def do_dashboard(use_json):
@@ -275,6 +514,22 @@ def main():
         do_show(series_id, use_json)
     elif "--create" in args:
         do_create(use_json)
+    elif "--delete" in args:
+        idx = args.index("--delete")
+        series_id = args[idx + 1] if idx + 1 < len(args) else None
+        if not series_id:
+            print("错误: --delete 需要系列 ID", file=sys.stderr)
+            sys.exit(1)
+        do_delete(series_id, use_json)
+    elif "--advance" in args:
+        idx = args.index("--advance")
+        series_id = args[idx + 1] if idx + 1 < len(args) else None
+        if not series_id:
+            print("错误: --advance 需要系列 ID", file=sys.stderr)
+            sys.exit(1)
+        do_advance(series_id, use_json)
+    elif "--current" in args:
+        do_current(use_json)
     elif "--dashboard" in args:
         do_dashboard(use_json)
     else:

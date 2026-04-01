@@ -56,9 +56,13 @@ cd <ROOT> && python3 bin/kt-work --next [--dir <subdir>] --json
 
 ---
 
+## 分支管理
+
+每个 series 有独立的工作分支 `zh-work/<series-id>`，由 `kt-series --create` 自动创建。流水线阶段切换时自动切到对应分支（切分支前检查工作区干净）。
+
 ## 恢复机制
 
-每个文件开始前，先读取 workflow-state，如果返回非 0 stage，从该 stage 恢复。向用户汇报恢复点，确认是否继续。
+每个文件开始前，先读取 workflow-state，如果返回非 0 stage，从该 stage 恢复。根据 series-id 自动切到对应分支。向用户汇报恢复点，确认是否继续。
 
 ---
 
@@ -96,18 +100,19 @@ cd <ROOT> && python3 bin/kt-check --file linux/Documentation/translations/zh_CN/
 
 设置 stage 4。
 
-1. 获取英文原文当前 commit 信息
-2. 构建 4 行 commit message（参见 `docs/commit-format.md`）
-3. 用户确认后 commit
-4. 生成补丁：
-   ```bash
-   cd <ROOT> && python3 bin/kt-format-patch --json
-   ```
-5. **必须**验证 checkpatch + htmldocs（bin/kt-format-patch 自动完成）
-6. 自动创建 series 条目：
+1. 如果还没有 series，先创建（自动建 `zh-work/<id>` 分支并切过去）：
    ```bash
    cd <ROOT> && python3 bin/kt-series --create --json
    ```
+2. 确保已在 series 分支上
+3. 获取英文原文当前 commit 信息
+4. 构建 4 行 commit message（参见 `docs/commit-format.md`）
+5. 用户确认后 commit
+6. 生成补丁（自动按 series 分支隔离）：
+   ```bash
+   cd <ROOT> && python3 bin/kt-format-patch --series <id> --json
+   ```
+7. **必须**验证 checkpatch + htmldocs（bin/kt-format-patch 自动完成）
 
 提议：_"补丁已生成，系列已创建。建议先发给自己测试。"_
 
@@ -199,7 +204,19 @@ cd <ROOT> && python3 bin/kt-send-patch --submit --series <id> --json
 
 ## 阶段 12 — ARC（归档）
 
-设置 stage 12。汇报完成。
+设置 stage 12。推进 series 到 merged（自动检测 commits 是否已在 docs-next 中）：
+
+```bash
+cd <ROOT> && python3 bin/kt-series --advance <id> --json
+```
+
+这会标记 phase=merged。向用户确认是否删除工作分支：
+
+```bash
+cd <ROOT> && python3 bin/kt-series --delete <id> --json
+```
+
+汇报完成。
 
 ## 批量模式
 

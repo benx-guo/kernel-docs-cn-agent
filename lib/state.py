@@ -110,11 +110,12 @@ def create_series(
     subject: str,
     files: list[str],
     commits: list[str],
+    branch: str | None = None,
 ) -> None:
     """Create a new series entry in pending internal_review state."""
     p = Path(path)
     data = load_series_state(p)
-    data.setdefault("series", {})[series_id] = {
+    entry: dict = {
         "subject": subject,
         "files": files,
         "commits": commits,
@@ -124,7 +125,22 @@ def create_series(
             "upstream": {"status": "pending", "rounds": []},
         },
     }
+    if branch:
+        entry["branch"] = branch
+    data.setdefault("series", {})[series_id] = entry
     _save(p, data)
+
+
+def delete_series(path: str | Path, series_id: str) -> bool:
+    """Remove a series entry. Returns True if it existed."""
+    p = Path(path)
+    data = load_series_state(p)
+    series = data.get("series", {})
+    if series_id not in series:
+        return False
+    del series[series_id]
+    _save(p, data)
+    return True
 
 
 def add_round(

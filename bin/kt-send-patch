@@ -23,14 +23,23 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib.project import root, kernel_dir, outgoing_dir, series_state_path, config_dir
-from lib.git_helpers import user_email
+from lib.git_helpers import user_email, series_id_from_branch, is_work_branch
 from lib.patch import run_get_maintainer
 from lib.state import load_series_state, add_round
 
 
-def find_patches():
-    """Find patch files in outgoing/."""
+def find_patches(series_id=None):
+    """Find patch files in outgoing/.
+
+    If *series_id* is given, look in ``outgoing/<series_id>/``.
+    Falls back to ``outgoing/*.patch`` for backward compatibility.
+    """
     od = outgoing_dir()
+    if series_id:
+        series_dir = od / series_id
+        if series_dir.is_dir():
+            return sorted(series_dir.glob("*.patch"))
+    # Fallback: flat outgoing/*.patch
     if not od.is_dir():
         return []
     return sorted(od.glob("*.patch"))
@@ -94,12 +103,16 @@ def main():
         idx = args.index("--series")
         series_id = args[idx + 1] if idx + 1 < len(args) else None
 
+    # Auto-detect series from current branch
+    if not series_id and is_work_branch():
+        series_id = series_id_from_branch()
+
     if "--in-reply-to" in args:
         idx = args.index("--in-reply-to")
         in_reply_to = args[idx + 1] if idx + 1 < len(args) else None
 
     # Check prerequisites
-    patches = find_patches()
+    patches = find_patches(series_id=series_id)
     if not patches:
         msg = "没有补丁文件。请先运行 kt-format-patch。"
         if use_json:
@@ -115,18 +128,8 @@ def main():
     email = user_email()
     conf = load_email_conf()
 
-    # Series integration
-    if series_id:
-        ss = load_series_state(series_state_path())
-        s = ss.get("series", {}).get(series_id)
-        if s:
-            phase = s["phase"]
-            rounds = s["phases"].get(phase, {}).get("rounds", [])
-            # Auto in-reply-to for v2+
-            if rounds and not in_reply_to:
-                first_cover_mid = rounds[0].get("cover_message_id")
-                if first_cover_mid:
-                    in_reply_to = first_cover_mid
+    # Series integration — only use in-reply-to if explicitly passed via --in-reply-to.
+    # Kernel convention: each version (v1, v2, ...) is an independent thread.
 
     # Determine mode
     mode = None
@@ -218,8 +221,8 @@ def main():
     result["stderr"] = stderr
     result["success"] = rc == 0
 
-    # Update series state if sent successfully and not dry-run
-    if rc == 0 and not is_dry and series_id:
+    # Update series state only for review/submit sends (not --self test sends)
+    if rc == 0 and not is_dry and series_id and mode in ("review", "submit"):
         mid = extract_message_id(stdout + stderr)
         version = add_round(series_state_path(), series_id, cover_message_id=mid)
         result["series_version"] = version

@@ -11,12 +11,14 @@ cd <ROOT> && python3 bin/kt-format-patch [用户参数] --json
 ```
 
 此命令自动完成：
+- 如果指定 `--series`（或当前在 `zh-work/*` 分支时自动推断），切到该 series 的工作分支
 - 检查 docs-next..HEAD 的提交
-- 清理并生成补丁到 `outgoing/`
+- 清理并生成补丁到 `outgoing/<series-id>/`（无 series 时生成到 `outgoing/`）
 - 多补丁时自动加 `--cover-letter --thread=shallow`
 - 运行 `checkpatch.pl` 验证每个补丁
 - 运行 `make htmldocs` 检查 RST 构建
-- 如果指定 `--series`，从 series-state.json 读取版本号并更新 commits
+- 从 series-state.json 读取版本号并更新 commits
+- 完成后切回原分支
 
 ## 解析结果
 

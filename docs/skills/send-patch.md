@@ -51,7 +51,8 @@ cd <ROOT> && python3 bin/kt-send-patch --submit [额外参数] --json
 
 ## Series 集成
 
-如果指定了 `--series <id>`：
+如果指定了 `--series <id>`（或当前在 `zh-work/*` 分支时自动推断）：
+- 从 `outgoing/<series-id>/` 查找补丁（兼容旧的 `outgoing/*.patch`）
 - `bin/kt-send-patch` 自动从 series-state.json 读取配置
 - v2+ 自动带 `--in-reply-to`
 - 发送后自动更新 series-state（新 round、status=sent）
