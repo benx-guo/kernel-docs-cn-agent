@@ -1,13 +1,17 @@
 # kernel-docs-cn-agent
 
-基于 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 的 Linux 内核中文翻译 Agent。提供从翻译、质量检查、补丁生成到邮件发送的完整工作流。
+Linux 内核中文翻译工具集。提供从翻译、质量检查、补丁生成到邮件发送的完整工作流。
+
+支持多种使用方式：任何 AI 编程工具，或纯 CLI（无 AI）。
+
+> **AI Agent 入口**：请先阅读 [`docs/guide.md`](docs/guide.md)，其中包含完整的文档索引、操作指引和工作流说明。
 
 ## 快速开始
 
 ### 前置条件
 
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
-- Git, Perl, Python 3
+- Python 3.10+
+- Git, Perl, Make
 - `git send-email`（发送补丁用）
 
 ### 安装
@@ -15,91 +19,88 @@
 ```bash
 git clone https://github.com/benx-guo/kernel-docs-cn-agent.git
 cd kernel-docs-cn-agent
-
-# 复制配置模板
-cp .claude/settings.local.json.example .claude/settings.local.json
-
-# 启动 Claude Code
-claude
 ```
 
-在 Claude Code 中运行：
+### 初始化
 
-```
-/setup
+```bash
+python3 bin/kt-setup
 ```
 
 这会克隆 Alex Shi 的 `docs-next` 分支到 `linux/` 目录，创建工作分支，检查依赖环境。
 
-## 工作流
+## 使用方式
 
-```
-/diff                     # 查看翻译状态，找到需要翻译/更新的文件
-/diff --dir admin-guide   # 查看某个子目录
-/diff --detail <file>     # 查看某个文件的英文变更
+### AI 工具用户
 
-/translate <file>         # 翻译或更新文件
-/check                    # 质量检查（RST 语法、行宽、术语）
+1. 将 `docs/guide.md` 加入 AI 上下文作为入口
+2. `docs/skills/` 中的 9 个操作指引是纯 Markdown，任何 AI 工具都可以直接使用
+3. AI 调用 `bin/` CLI 工具处理数据，自身负责翻译和交互
 
-/format-patch             # 生成补丁（自动 checkpatch + htmldocs 验证）
-
-/send-patch --self        # 先发给自己检查格式
-/send-patch --review      # 发给内审
-/send-patch --submit      # 提交到上游邮件列表
-```
-
-### 全流程模式
-
-```
-/work <file>              # 自动驱动翻译全流程（12 阶段）
+```bash
+python3 bin/kt-setup          # 初始化
+python3 bin/kt-diff --status  # 找文件
+# ... AI 按 docs/skills/translate.md 翻译 ...
+python3 bin/kt-check --file <path>    # 质量检查
+python3 bin/kt-format-patch           # 生成补丁
+python3 bin/kt-send-patch --self      # 测试发送
 ```
 
-### 补丁系列管理
+### 纯 CLI 用户（无 AI）
 
-```
-/series                   # 列出活跃系列
-/series --show <id>       # 查看系列详情
-/series --dashboard       # 全景面板
-/series --check-feedback  # 检查邮件反馈
-/series --prepare-next    # 准备下一轮修改
-/series --advance         # 推进阶段（内审 → 上游）
+```bash
+python3 bin/kt-setup                  # 1. 初始化
+python3 bin/kt-diff --status          # 2. 找需要翻译/更新的文件
+# 手动翻译（参考 docs/translation-rules.md）
+python3 bin/kt-check --file <path>    # 3. 质量检查
+python3 bin/kt-format-patch           # 4. 生成补丁
+python3 bin/kt-send-patch --self      # 5. 发给自己测试
+python3 bin/kt-send-patch --submit    # 6. 提交到邮件列表
 ```
 
 ## 项目结构
 
 ```
 .
-├── CLAUDE.md                 # Agent 行为指令和翻译规范
-├── .claude/skills/           # Claude Code skill 定义
-│   ├── setup/                # 环境初始化
-│   ├── diff/                 # 翻译差异比对
-│   ├── translate/            # 执行翻译
-│   ├── check/                # 质量检查
-│   ├── format-patch/         # 生成补丁
-│   ├── send-patch/           # 发送补丁
-│   ├── mail/                 # 邮件列表操作
-│   ├── series/               # 补丁系列生命周期管理
-│   └── work/                 # 全流程编排
+├── docs/                        # 知识文档 + 操作指引（框架无关）
+│   ├── skills/                  # 各功能操作指引（任何 AI 工具可读）
+├── lib/                         # 共享 Python 库（仅 stdlib，无需 pip）
+├── bin/                         # 独立 CLI 工具
+│   ├── kt-setup                 # 环境初始化
+│   ├── kt-diff                  # 翻译差异分析
+│   ├── kt-check                 # 质量检查
+│   ├── kt-format-patch          # 补丁生成 + 验证
+│   ├── kt-send-patch            # 补丁发送
+│   ├── kt-series                # 补丁系列管理
+│   ├── kt-mail                  # 邮件列表搜索/查看
+│   └── kt-work                  # 工作流状态管理
 ├── config/
-│   ├── email.conf.example    # 邮件配置模板
-│   └── glossary.txt          # 内核术语表
-└── scripts/                  # 辅助脚本
+│   ├── email.conf.example       # 邮件配置模板
+│   └── glossary.txt             # 内核术语表（246 个术语）
+└── scripts/                     # Web/TUI 辅助工具
+    ├── diff-web.py              # 翻译状态 Web 仪表盘
+    ├── series-dashboard.py      # 补丁系列 TUI
+    └── serve-docs.py            # 文档实时预览服务器
 ```
 
-运行 `/setup` 后会生成：
+## CLI 工具
 
-```
-├── linux/                    # 内核源码（docs-next 分支）
-└── outgoing/                 # 生成的补丁文件
-```
+所有 `bin/kt-*` 工具支持 `--json` 参数输出 JSON，方便其他工具集成。
 
-## 邮件配置
-
-参考 `config/email.conf.example` 配置 `git send-email`。Gmail 用户需要[应用专用密码](https://myaccount.google.com/apppasswords)。
+| 工具 | 用途 | 示例 |
+|------|------|------|
+| `kt-setup` | 环境初始化 | `kt-setup --check-deps` |
+| `kt-diff` | 翻译差异分析 | `kt-diff --status --json` |
+| `kt-check` | 质量检查 | `kt-check --file <path> --fix` |
+| `kt-format-patch` | 补丁生成 | `kt-format-patch --series <id>` |
+| `kt-send-patch` | 补丁发送 | `kt-send-patch --self` |
+| `kt-series` | 系列管理 | `kt-series --dashboard` |
+| `kt-mail` | 邮件搜索 | `kt-mail --search "docs/zh_CN"` |
+| `kt-work` | 工作流状态 | `kt-work --next` |
 
 ## 翻译规范
 
-详见 [CLAUDE.md](CLAUDE.md) 和 [内核官方翻译指南](https://docs.kernel.org/translations/zh_CN/how-to.html)。
+详见 `docs/translation-rules.md` 和[内核官方翻译指南](https://docs.kernel.org/translations/zh_CN/how-to.html)。
 
 要点：
 - 每行不超过 80 显示列宽（中文字符 = 2 列）
@@ -107,6 +108,10 @@ claude
 - 代码、命令、路径保留英文原文
 - 使用中文标点，中英文之间加空格
 
+## 邮件配置
+
+参考 `config/email.conf.example` 配置 `git send-email`。Gmail 用户需要[应用专用密码](https://myaccount.google.com/apppasswords)。
+
 ## License
 
-翻译内容遵循 Linux 内核 [GPL-2.0](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html) 许可。
+工具代码（bin/、lib/、docs/）采用 [MIT](LICENSE) 许可。翻译内容遵循 Linux 内核 [GPL-2.0](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html)。

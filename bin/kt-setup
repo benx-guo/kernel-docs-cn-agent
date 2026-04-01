@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""kt-setup — Initialize the kernel translation environment.
+
+Usage:
+    kt-setup [--check-deps] [--status] [--json]
+
+Options:
+    --check-deps    Only check dependencies, don't clone/update
+    --status        Show current environment status
+    --json          Output JSON instead of human-readable text
+"""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from lib.project import (
+    root, kernel_dir, data_dir, outgoing_dir,
+    glossary_path, workflow_state_path, series_state_path,
+)
+from lib.state import load_workflow_state, load_series_state
+
+
+def check_deps():
+    """Check required and optional dependencies."""
+    required = {"git": False, "python3": False, "make": False, "perl": False}
+    optional = {"sphinx-build": False, "mbsync": False, "notmuch": False,
+                "git-send-email": False}
+
+    for cmd in required:
+        required[cmd] = shutil.which(cmd) is not None
+
+    for cmd in optional:
+        if cmd == "git-send-email":
+            r = subprocess.run(["git", "send-email", "--help"],
+                               capture_output=True, text=True)
+            optional[cmd] = r.returncode == 0
+        elif cmd == "sphinx-build":
+            optional[cmd] = (shutil.which("sphinx-build") is not None or
+                             subprocess.run([sys.executable, "-m", "sphinx", "--version"],
+                                            capture_output=True).returncode == 0)
+        else:
+            optional[cmd] = shutil.which(cmd) is not None
+
+    return {"required": required, "optional": optional}
+
+
+def ensure_directories():
+    """Create runtime directories and seed state files if missing."""
+    for d in [data_dir(), outgoing_dir()]:
+        d.mkdir(parents=True, exist_ok=True)
+
+    wfp = workflow_state_path()
+    if not wfp.is_file():
+        wfp.write_text('{"version": 1, "files": {}}\n', encoding="utf-8")
+
+    ssp = series_state_path()
+    if not ssp.is_file():
+        ssp.write_text('{"version": 1, "series": {}}\n', encoding="utf-8")
+
+
+def clone_or_update():
+    """Clone or update the kernel repository."""
+    kd = kernel_dir()
+    if (kd / ".git").is_dir():
+        # Update
+        subprocess.run(["git", "fetch", "origin"], cwd=kd, check=False)
+        subprocess.run(["git", "checkout", "docs-next"], cwd=kd, check=False)
+        r = subprocess.run(["git", "pull", "--ff-only", "origin", "docs-next"],
+                           cwd=kd, capture_output=True, text=True)
+        if r.returncode != 0:
+            subprocess.run(["git", "reset", "--hard", "origin/docs-next"],
+                           cwd=kd, check=False)
+        return "updated"
+    else:
+        subprocess.run([
+            "git", "clone", "--branch", "docs-next", "--single-branch",
+            "--depth=200",
+            "git://git.kernel.org/pub/scm/linux/kernel/git/alexs/linux.git",
+            str(kd),
+        ], check=True)
+        return "cloned"
+
+
+def setup_work_branch():
+    """Create or checkout the work branch."""
+    kd = kernel_dir()
+    r = subprocess.run(["git", "rev-parse", "--verify", "zh-translation-work"],
+                       cwd=kd, capture_output=True, text=True)
+    if r.returncode == 0:
+        subprocess.run(["git", "checkout", "zh-translation-work"], cwd=kd, check=False)
+        return "checked_out"
+    else:
+        subprocess.run(["git", "checkout", "-b", "zh-translation-work", "docs-next"],
+                       cwd=kd, check=True)
+        return "created"
+
+
+def get_status():
+    """Collect environment status."""
+    kd = kernel_dir()
+    status = {
+        "root": str(root()),
+        "kernel_exists": (kd / ".git").is_dir(),
+    }
+
+    if status["kernel_exists"]:
+        from lib.git_helpers import current_branch, head_oneline, user_name, user_email
+
+        status["branch"] = current_branch()
+        status["head"] = head_oneline()
+        status["user_name"] = user_name()
+        status["user_email"] = user_email()
+
+        # Count files
+        doc_base = kd / "Documentation"
+        en_count = sum(1 for f in doc_base.rglob("*.rst")
+                       if "translations" not in str(f.relative_to(doc_base)))
+        zh_dir = kd / "Documentation" / "translations" / "zh_CN"
+        zh_count = sum(1 for _ in zh_dir.rglob("*.rst")) if zh_dir.is_dir() else 0
+        status["en_files"] = en_count
+        status["zh_files"] = zh_count
+        status["coverage"] = round(zh_count / en_count * 100, 1) if en_count else 0
+
+    # Active series
+    ss = load_series_state(series_state_path())
+    active = []
+    for sid, s in ss.get("series", {}).items():
+        if s.get("phase") != "merged":
+            phase = s["phase"]
+            st = s["phases"].get(phase, {}).get("status", "?")
+            active.append({"id": sid, "phase": phase, "status": st,
+                           "files": len(s.get("files", []))})
+    status["active_series"] = active
+
+    return status
+
+
+def main():
+    args = sys.argv[1:]
+    if "-h" in args or "--help" in args:
+        print(__doc__.strip()); return
+    use_json = "--json" in args
+
+    if "--check-deps" in args:
+        deps = check_deps()
+        if use_json:
+            print(json.dumps(deps, indent=2))
+        else:
+            print("=== 必需依赖 ===")
+            for cmd, ok in deps["required"].items():
+                print(f"  {'✓' if ok else '✗'} {cmd}")
+            print("\n=== 可选依赖 ===")
+            for cmd, ok in deps["optional"].items():
+                print(f"  {'✓' if ok else '✗'} {cmd}")
+            missing = [c for c, ok in deps["required"].items() if not ok]
+            if missing:
+                print(f"\n缺失: {', '.join(missing)}")
+                sys.exit(1)
+        sys.exit(0)
+
+    if "--status" in args:
+        status = get_status()
+        if use_json:
+            print(json.dumps(status, indent=2, ensure_ascii=False))
+        else:
+            print(f"项目根目录: {status['root']}")
+            if status["kernel_exists"]:
+                print(f"分支: {status['branch']}")
+                print(f"HEAD: {status['head']}")
+                print(f"英文文件: {status['en_files']}")
+                print(f"中文文件: {status['zh_files']}")
+                print(f"覆盖率: {status['coverage']}%")
+                if status["active_series"]:
+                    print("\n活跃系列:")
+                    for s in status["active_series"]:
+                        print(f"  {s['id']}: {s['phase']}/{s['status']} ({s['files']} files)")
+            else:
+                print("内核仓库: 未克隆")
+        sys.exit(0)
+
+    # Full setup
+    deps = check_deps()
+    missing = [c for c, ok in deps["required"].items() if not ok]
+    if missing:
+        print(f"错误: 缺少必需依赖: {', '.join(missing)}", file=sys.stderr)
+        sys.exit(1)
+
+    ensure_directories()
+    repo_action = clone_or_update()
+    branch_action = setup_work_branch()
+    status = get_status()
+
+    if use_json:
+        print(json.dumps({
+            "repo_action": repo_action,
+            "branch_action": branch_action,
+            "status": status,
+            "deps": deps,
+        }, indent=2, ensure_ascii=False))
+    else:
+        print(f"仓库: {repo_action}")
+        print(f"工作分支: {branch_action}")
+        print(f"分支: {status.get('branch', '?')}")
+        print(f"HEAD: {status.get('head', '?')}")
+        print(f"英文文件: {status.get('en_files', '?')}")
+        print(f"中文文件: {status.get('zh_files', '?')}")
+        print(f"覆盖率: {status.get('coverage', '?')}%")
+
+
+if __name__ == "__main__":
+    main()

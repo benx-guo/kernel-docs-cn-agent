@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""kt-mail — Search and view kernel mailing list threads.
+
+Usage:
+    kt-mail --search QUERY [--local] [--json]
+    kt-mail --thread ID_OR_URL [--local] [--json]
+
+Options:
+    --search QUERY   Search lore.kernel.org (or local notmuch)
+    --thread ID      View a thread by message-id or lore URL
+    --local          Use local notmuch database instead of lore
+    --json           Output JSON
+"""
+
+import json
+import mailbox
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import email
+import email.header
+from pathlib import Path
+from urllib.parse import quote
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from lib.project import kernel_dir
+
+
+def extract_message_id(input_str):
+    """Extract bare message-id from URL or bracketed form."""
+    # URL form: https://lore.kernel.org/linux-doc/MSG-ID/
+    m = re.search(r"lore\.kernel\.org/[^/]+/([^/]+)/", input_str)
+    if m:
+        return m.group(1)
+    # Strip angle brackets
+    return input_str.strip("<>").strip()
+
+
+def decode_header(value):
+    """Decode MIME-encoded header."""
+    if value is None:
+        return "(none)"
+    parts = email.header.decode_header(value)
+    result = []
+    for part, charset in parts:
+        if isinstance(part, bytes):
+            result.append(part.decode(charset or "utf-8", errors="replace"))
+        else:
+            result.append(part)
+    return " ".join(result)
+
+
+def get_body(msg):
+    """Extract plain text body from an email message."""
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.get_content_type() == "text/plain":
+                payload = part.get_payload(decode=True)
+                if payload:
+                    charset = part.get_content_charset() or "utf-8"
+                    return payload.decode(charset, errors="replace")
+        return "(no plain text body)"
+    payload = msg.get_payload(decode=True)
+    if payload:
+        charset = msg.get_content_charset() or "utf-8"
+        return payload.decode(charset, errors="replace")
+    return "(empty body)"
+
+
+def search_lore(query):
+    """Search lore.kernel.org via Atom feed. Returns list of entries."""
+    encoded = quote(query)
+    url = f"https://lore.kernel.org/linux-doc/?q={encoded}&x=A"
+
+    r = subprocess.run(
+        ["curl", "-s", "-A", "kernel-translations-agent/1.0", "-f", url],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return []
+
+    # Simple XML parsing (avoid external deps)
+    entries = []
+    for match in re.finditer(
+        r"<entry>.*?</entry>", r.stdout, re.DOTALL
+    ):
+        entry_xml = match.group()
+        title_m = re.search(r"<title>(.*?)</title>", entry_xml, re.DOTALL)
+        author_m = re.search(r"<name>(.*?)</name>", entry_xml)
+        updated_m = re.search(r"<updated>(.*?)</updated>", entry_xml)
+        link_m = re.search(r'<link\s+href="([^"]+)"', entry_xml)
+
+        entries.append({
+            "title": title_m.group(1).strip() if title_m else "?",
+            "author": author_m.group(1).strip() if author_m else "?",
+            "updated": updated_m.group(1).strip() if updated_m else "?",
+            "link": link_m.group(1).strip() if link_m else "",
+            "is_reply": bool(title_m and title_m.group(1).strip().startswith("Re:")),
+        })
+    return entries
+
+
+def fetch_thread_mbox(message_id):
+    """Download a thread mbox from lore and return parsed messages."""
+    with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as tmp:
+        tmp_path = tmp.name
+
+    url = f"https://lore.kernel.org/linux-doc/{message_id}/t.mbox.gz"
+    r = subprocess.run(
+        f'curl -s -A "kernel-translations-agent/1.0" -f "{url}" | gunzip > {tmp_path}',
+        shell=True, capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        Path(tmp_path).unlink(missing_ok=True)
+        return []
+
+    mbox = mailbox.mbox(tmp_path)
+    messages = []
+    for msg in mbox:
+        messages.append({
+            "from": decode_header(msg["From"]),
+            "subject": decode_header(msg["Subject"]),
+            "date": msg["Date"] or "",
+            "message_id": msg["Message-ID"] or "",
+            "in_reply_to": msg.get("In-Reply-To", ""),
+            "is_reply": bool(msg.get("In-Reply-To")),
+            "body": get_body(msg),
+        })
+
+    Path(tmp_path).unlink(missing_ok=True)
+    return messages
+
+
+def search_local(query):
+    """Search local notmuch database."""
+    if not shutil.which("notmuch"):
+        return {"error": "notmuch 不可用。请安装: sudo dnf install notmuch"}
+
+    # Sync first
+    if shutil.which("mbsync"):
+        subprocess.run(["mbsync", "-a"], capture_output=True, text=True, timeout=60)
+    subprocess.run(["notmuch", "new"], capture_output=True, text=True)
+
+    r = subprocess.run(["notmuch", "search", query], capture_output=True, text=True)
+    results = []
+    for line in r.stdout.splitlines():
+        if line.strip():
+            results.append(line.strip())
+    return {"results": results}
+
+
+def thread_local(message_id):
+    """View thread from local notmuch."""
+    if not shutil.which("notmuch"):
+        return {"error": "notmuch 不可用"}
+
+    if shutil.which("mbsync"):
+        subprocess.run(["mbsync", "-a"], capture_output=True, text=True, timeout=60)
+    subprocess.run(["notmuch", "new"], capture_output=True, text=True)
+
+    r = subprocess.run(
+        ["notmuch", "show", "--format=json", f"thread:{{id:{message_id}}}"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return {"error": f"notmuch 查询失败: {r.stderr}"}
+
+    try:
+        data = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        return {"error": "解析 notmuch 输出失败"}
+
+    messages = []
+    def walk(msgs):
+        for msg in msgs:
+            if isinstance(msg, list):
+                walk(msg)
+            elif isinstance(msg, dict):
+                hdrs = msg.get("headers", {})
+                body_text = ""
+                for part in msg.get("body", []):
+                    if part.get("content-type", "").startswith("text/plain"):
+                        body_text = part.get("content", "")
+                    elif "content" in part and isinstance(part["content"], list):
+                        for sub in part["content"]:
+                            if isinstance(sub, dict) and sub.get("content-type", "").startswith("text/plain"):
+                                body_text = sub.get("content", "")
+                messages.append({
+                    "from": hdrs.get("From", "?"),
+                    "subject": hdrs.get("Subject", "?"),
+                    "date": hdrs.get("Date", "?"),
+                    "message_id": hdrs.get("Message-ID", "?"),
+                    "in_reply_to": hdrs.get("In-Reply-To", ""),
+                    "is_reply": bool(hdrs.get("In-Reply-To")),
+                    "body": body_text,
+                })
+
+    walk(data)
+    return {"messages": messages}
+
+
+def main():
+    args = sys.argv[1:]
+    if "-h" in args or "--help" in args:
+        print(__doc__.strip()); return
+    use_json = "--json" in args
+    use_local = "--local" in args
+
+    if "--search" in args:
+        idx = args.index("--search")
+        query = args[idx + 1] if idx + 1 < len(args) else None
+        if not query:
+            from lib.git_helpers import user_email
+            query = f"f:{user_email()}"
+
+        if use_local:
+            result = search_local(query)
+        else:
+            entries = search_lore(query)
+            result = {"query": query, "entries": entries, "count": len(entries)}
+
+        if use_json:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            if use_local:
+                if "error" in result:
+                    print(result["error"], file=sys.stderr)
+                    sys.exit(1)
+                for line in result.get("results", []):
+                    print(line)
+            else:
+                print(f"搜索: {query} ({len(entries)} 结果)")
+                for i, e in enumerate(entries, 1):
+                    reply_tag = " [reply]" if e["is_reply"] else ""
+                    print(f"  {i}. {e['title']}{reply_tag}")
+                    print(f"     {e['author']} — {e['updated'][:10]}")
+                    if e["link"]:
+                        print(f"     {e['link']}")
+        sys.exit(0)
+
+    if "--thread" in args:
+        idx = args.index("--thread")
+        id_or_url = args[idx + 1] if idx + 1 < len(args) else None
+        if not id_or_url:
+            print("错误: --thread 需要 message-id 或 URL", file=sys.stderr)
+            sys.exit(1)
+
+        mid = extract_message_id(id_or_url)
+
+        if use_local:
+            result = thread_local(mid)
+            if "error" in result:
+                print(result["error"], file=sys.stderr)
+                sys.exit(1)
+            messages = result["messages"]
+        else:
+            messages = fetch_thread_mbox(mid)
+
+        if use_json:
+            print(json.dumps({"message_id": mid, "messages": messages,
+                              "count": len(messages)}, indent=2, ensure_ascii=False))
+        else:
+            print(f"线程: {mid} ({len(messages)} 条消息)")
+            for msg in messages:
+                marker = "REPLY" if msg["is_reply"] else "ORIGINAL"
+                print(f"\n{'='*60}")
+                print(f"[{marker}]")
+                print(f"  From:    {msg['from']}")
+                print(f"  Subject: {msg['subject']}")
+                print(f"  Date:    {msg['date']}")
+                body = msg["body"].rstrip()
+                lines = body.split("\n")
+                if len(lines) > 100:
+                    print("\n".join(lines[:100]))
+                    print(f"\n... ({len(lines) - 100} more lines)")
+                else:
+                    print(body)
+        sys.exit(0)
+
+    print("用法: kt-mail --search QUERY | --thread ID_OR_URL", file=sys.stderr)
+    sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

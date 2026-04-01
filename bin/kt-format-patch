@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""kt-format-patch — Generate formatted kernel patches.
+
+Usage:
+    kt-format-patch [--version N] [--series ID] [--json]
+
+Options:
+    --version N    Patch version (adds --reroll-count=N)
+    --series ID    Read version from series-state.json
+    --json         Output JSON
+"""
+
+import json
+import shutil
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from lib.project import root, kernel_dir, outgoing_dir, series_state_path
+from lib.git_helpers import git_lines, git_stdout, format_patch
+from lib.patch import run_checkpatch, run_get_maintainer, run_htmldocs
+from lib.state import load_series_state, save_series_state
+
+
+def main():
+    args = sys.argv[1:]
+    if "-h" in args or "--help" in args:
+        print(__doc__.strip()); return
+    use_json = "--json" in args
+
+    version = None
+    series_id = None
+
+    if "--version" in args:
+        idx = args.index("--version")
+        version = int(args[idx + 1]) if idx + 1 < len(args) else None
+
+    if "--series" in args:
+        idx = args.index("--series")
+        series_id = args[idx + 1] if idx + 1 < len(args) else None
+
+    # Read version from series-state if needed
+    if series_id:
+        ss = load_series_state(series_state_path())
+        s = ss.get("series", {}).get(series_id)
+        if s:
+            phase = s["phase"]
+            rounds = s["phases"].get(phase, {}).get("rounds", [])
+            if rounds:
+                version = len(rounds) + 1
+            elif phase == "upstream":
+                version = None  # upstream v1, no reroll
+
+    # Check for commits
+    commits = git_lines("log", "--oneline", "docs-next..HEAD")
+    if not commits:
+        msg = "没有提交。请先 commit 翻译文件。"
+        if use_json:
+            print(json.dumps({"error": msg}))
+        else:
+            print(msg)
+        sys.exit(1)
+
+    # Clean and create output dir
+    od = outgoing_dir()
+    if od.is_dir():
+        shutil.rmtree(od)
+    od.mkdir(parents=True)
+
+    # Generate patches
+    cover_letter = len(commits) > 1
+    patches = format_patch(
+        base="docs-next",
+        output_dir=od,
+        cover_letter=cover_letter,
+        version=version,
+    )
+
+    # Read patch subjects
+    patch_info = []
+    for p_path in patches:
+        p = Path(p_path)
+        subject = ""
+        with open(p, encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("Subject:"):
+                    subject = line[len("Subject:"):].strip()
+                    break
+        patch_info.append({"file": p.name, "subject": subject})
+
+    # Get maintainers
+    kd = kernel_dir()
+    recipients = set()
+    for p_path in patches:
+        p = Path(p_path)
+        if "0000-cover-letter" in p.name:
+            continue
+        maintainers = run_get_maintainer(p, kd)
+        recipients.update(maintainers)
+
+    # Always include defaults
+    recipients.add("Alex Shi <alexs@kernel.org>")
+    recipients.add("linux-doc@vger.kernel.org")
+
+    # Validate patches
+    checkpatch_results = []
+    for p_path in patches:
+        p = Path(p_path)
+        if "0000-cover-letter" in p.name:
+            continue
+        r = run_checkpatch(p, kd)
+        checkpatch_results.append({"patch": p.name, **r})
+
+    htmldocs_result = run_htmldocs(kd)
+
+    # Update series-state if needed
+    if series_id:
+        ss = load_series_state(series_state_path())
+        if series_id in ss.get("series", {}):
+            commit_hashes = git_lines("log", "--format=%h", "docs-next..HEAD")
+            ss["series"][series_id]["commits"] = commit_hashes
+            save_series_state(series_state_path(), ss)
+
+    output = {
+        "patches": patch_info,
+        "patch_count": len(patch_info),
+        "cover_letter": cover_letter,
+        "version": version,
+        "series_id": series_id,
+        "recipients": sorted(recipients),
+        "checkpatch": checkpatch_results,
+        "htmldocs": {
+            "warnings": htmldocs_result["warnings"],
+            "errors": htmldocs_result["errors"],
+        },
+    }
+
+    if use_json:
+        print(json.dumps(output, indent=2, ensure_ascii=False))
+    else:
+        print(f"生成 {len(patch_info)} 个补丁:")
+        for pi in patch_info:
+            print(f"  {pi['file']}: {pi['subject']}")
+
+        if series_id:
+            ver_str = f"v{version}" if version else "v1"
+            print(f"\n系列: {series_id} ({ver_str})")
+
+        print(f"\n推荐收件人:")
+        for r in sorted(recipients):
+            print(f"  {r}")
+
+        print(f"\n验证结果:")
+        all_ok = True
+        for cr in checkpatch_results:
+            status = "✓" if cr["errors"] == 0 else "✗"
+            print(f"  {status} {cr['patch']}: {cr['errors']}E / {cr['warnings']}W")
+            if cr["errors"] > 0:
+                all_ok = False
+
+        zh_warnings = htmldocs_result["warnings"]
+        zh_errors = htmldocs_result["errors"]
+        if zh_errors:
+            print(f"  ✗ htmldocs: {len(zh_errors)} errors")
+            for e in zh_errors:
+                print(f"    {e}")
+            all_ok = False
+        elif zh_warnings:
+            print(f"  ! htmldocs: {len(zh_warnings)} warnings")
+        else:
+            print(f"  ✓ htmldocs: 无 zh_CN 相关问题")
+
+        if all_ok:
+            print("\n全部通过。建议下一步: kt-send-patch --self")
+        else:
+            print("\n有错误需要修复后重新生成。")
+            sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

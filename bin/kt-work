@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+"""kt-work — Workflow state management.
+
+Usage:
+    kt-work [--stage FILE] [--next] [--list] [--set FILE STAGE] [--json]
+
+Options:
+    --stage FILE   Show current stage for a file
+    --next         Find the next file to work on
+    --list         List all in-progress files
+    --set FILE N   Set a file's stage
+    --json         Output JSON
+"""
+
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from lib.project import kernel_dir, workflow_state_path, en_doc_dir, zh_cn_dir
+from lib.state import (
+    get_workflow_stage, set_workflow_stage, list_in_progress_files,
+    load_workflow_state,
+)
+from lib.git_helpers import build_zh_commit_map, english_commits_since
+
+
+STAGE_NAMES = {
+    0: "未开始", 1: "CHK", 2: "TL", 3: "QA", 4: "PAT",
+    5: "E1", 6: "E2", 7: "W1", 8: "RV1", 9: "E3",
+    10: "W2", 11: "RV2", 12: "ARC",
+}
+
+
+def find_next_file(dir_filter=None):
+    """Find the next file to work on: in-progress first, then outdated, then missing."""
+    wfp = workflow_state_path()
+
+    # Check in-progress
+    in_progress = list_in_progress_files(wfp)
+    if dir_filter:
+        in_progress = [(f, s) for f, s in in_progress
+                       if f.startswith(dir_filter.rstrip("/") + "/")]
+    if in_progress:
+        return {"file": in_progress[0][0], "stage": in_progress[0][1],
+                "source": "in_progress"}
+
+    # Check outdated files
+    kd = kernel_dir()
+    en_base = en_doc_dir()
+    zh_base = zh_cn_dir()
+
+    if not zh_base.is_dir():
+        return {"file": None, "source": "no_zh_dir"}
+
+    file_map = build_zh_commit_map()
+    candidates = []
+
+    for zh_file in sorted(zh_base.rglob("*.rst")):
+        rel = zh_file.relative_to(zh_base)
+        rel_str = str(rel)
+        if dir_filter and not rel_str.startswith(dir_filter.rstrip("/") + "/"):
+            continue
+
+        en_file = en_base / rel
+        zh_rel = str(zh_file.relative_to(kd))
+        entry = file_map.get(zh_rel)
+
+        if not en_file.exists() or not entry:
+            continue
+
+        zh_commit = entry[0]
+        en_rel = str(en_file.relative_to(kd))
+        count = english_commits_since(en_rel, zh_commit)
+        if count > 0:
+            candidates.append((count, rel_str))
+
+    if candidates:
+        # Prefer fewer commits behind (easier to update)
+        candidates.sort()
+        return {"file": candidates[0][1], "commits_behind": candidates[0][0],
+                "source": "outdated"}
+
+    # Check missing files
+    zh_file_set = {str(f.relative_to(zh_base)) for f in zh_base.rglob("*.rst")}
+    missing = []
+    for rst in sorted(en_base.rglob("*.rst")):
+        rel = rst.relative_to(en_base)
+        rel_str = str(rel)
+        if rel_str.startswith("translations/"):
+            continue
+        if dir_filter and not rel_str.startswith(dir_filter.rstrip("/") + "/"):
+            continue
+        if rel_str not in zh_file_set:
+            missing.append(rel_str)
+
+    if missing:
+        return {"file": missing[0], "source": "missing"}
+
+    return {"file": None, "source": "all_done"}
+
+
+def main():
+    args = sys.argv[1:]
+    if "-h" in args or "--help" in args:
+        print(__doc__.strip()); return
+    use_json = "--json" in args
+
+    if "--stage" in args:
+        idx = args.index("--stage")
+        file_key = args[idx + 1] if idx + 1 < len(args) else None
+        if not file_key:
+            print("错误: --stage 需要文件路径", file=sys.stderr)
+            sys.exit(1)
+        stage = get_workflow_stage(workflow_state_path(), file_key)
+        if use_json:
+            print(json.dumps({"file": file_key, "stage": stage,
+                              "name": STAGE_NAMES.get(stage, "?")}))
+        else:
+            print(f"{file_key}: stage {stage} ({STAGE_NAMES.get(stage, '?')})")
+        sys.exit(0)
+
+    if "--set" in args:
+        idx = args.index("--set")
+        file_key = args[idx + 1] if idx + 1 < len(args) else None
+        stage = int(args[idx + 2]) if idx + 2 < len(args) else None
+        if not file_key or stage is None:
+            print("错误: --set 需要文件路径和阶段号", file=sys.stderr)
+            sys.exit(1)
+        set_workflow_stage(workflow_state_path(), file_key, stage)
+        if use_json:
+            print(json.dumps({"file": file_key, "stage": stage, "action": "set"}))
+        else:
+            print(f"已设置: {file_key} → stage {stage} ({STAGE_NAMES.get(stage, '?')})")
+        sys.exit(0)
+
+    if "--next" in args:
+        # Optional --dir filter
+        dir_filter = None
+        if "--dir" in args:
+            idx = args.index("--dir")
+            dir_filter = args[idx + 1] if idx + 1 < len(args) else None
+
+        result = find_next_file(dir_filter)
+        if use_json:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            if result["file"]:
+                src = result["source"]
+                stage = result.get("stage", 0)
+                cb = result.get("commits_behind", "")
+                extra = f" (stage {stage})" if src == "in_progress" else ""
+                extra = f" ({cb} commits behind)" if src == "outdated" else extra
+                print(f"下一个文件: {result['file']} [{src}]{extra}")
+            else:
+                print("没有需要处理的文件。")
+        sys.exit(0)
+
+    if "--list" in args:
+        in_progress = list_in_progress_files(workflow_state_path())
+        if use_json:
+            print(json.dumps([{"file": f, "stage": s,
+                               "name": STAGE_NAMES.get(s, "?")}
+                              for f, s in in_progress], indent=2))
+        else:
+            if not in_progress:
+                print("没有进行中的文件。")
+            else:
+                print("进行中的文件:")
+                for f, s in in_progress:
+                    print(f"  {f}: stage {s} ({STAGE_NAMES.get(s, '?')})")
+        sys.exit(0)
+
+    # Default: show summary
+    wf = load_workflow_state(workflow_state_path())
+    files = wf.get("files", {})
+    in_progress = [(f, info["stage"]) for f, info in files.items()
+                   if 1 <= info.get("stage", 0) <= 11]
+    completed = [(f, info["stage"]) for f, info in files.items()
+                 if info.get("stage", 0) == 12]
+
+    if use_json:
+        print(json.dumps({"in_progress": len(in_progress),
+                           "completed": len(completed),
+                           "total": len(files)}, indent=2))
+    else:
+        print(f"工作流状态: {len(in_progress)} 进行中, {len(completed)} 已完成, {len(files)} 总计")
+        if in_progress:
+            for f, s in sorted(in_progress):
+                print(f"  {f}: stage {s} ({STAGE_NAMES.get(s, '?')})")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""kt-send-patch — Send translation patches via email.
+
+Usage:
+    kt-send-patch <--self | --review EMAIL | --submit> [--dry-run] [--in-reply-to ID] [--series ID] [--json]
+
+Options:
+    --self               Send to yourself for testing
+    --review EMAIL       Send to internal reviewer
+    --submit             Submit to upstream mailing list
+    --dry-run            Dry-run only (don't actually send)
+    --in-reply-to ID     Thread patches under a previous message
+    --series ID          Read metadata from series-state
+    --json               Output JSON
+"""
+
+import json
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from lib.project import root, kernel_dir, outgoing_dir, series_state_path, config_dir
+from lib.git_helpers import user_email
+from lib.patch import run_get_maintainer
+from lib.state import load_series_state, add_round
+
+
+def find_patches():
+    """Find patch files in outgoing/."""
+    od = outgoing_dir()
+    if not od.is_dir():
+        return []
+    return sorted(od.glob("*.patch"))
+
+
+def load_email_conf():
+    """Load email.conf if it exists."""
+    conf = config_dir() / "email.conf"
+    if not conf.is_file():
+        return {}
+    result = {}
+    for line in conf.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" in line:
+            k, v = line.split("=", 1)
+            result[k.strip()] = v.strip()
+    return result
+
+
+def send_email(to_list, cc_list, patches, dry_run=False, in_reply_to=None):
+    """Build and run git send-email command. Returns (returncode, stdout, stderr)."""
+    cmd = ["git", "send-email"]
+    for addr in to_list:
+        cmd += [f"--to={addr}"]
+    for addr in cc_list:
+        cmd += [f"--cc={addr}"]
+    cmd += ["--confirm=never"]
+    if dry_run:
+        cmd += ["--dry-run"]
+    if in_reply_to:
+        # Normalize message-id
+        mid = in_reply_to.strip("<>")
+        cmd += [f"--in-reply-to=<{mid}>"]
+    cmd += [str(p) for p in patches]
+
+    r = subprocess.run(cmd, cwd=kernel_dir(), capture_output=True, text=True)
+    return r.returncode, r.stdout, r.stderr
+
+
+def extract_message_id(output):
+    """Extract Message-ID from git send-email output."""
+    for line in output.splitlines():
+        m = re.search(r"Message-ID:\s*<([^>]+)>", line, re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return ""
+
+
+def main():
+    args = sys.argv[1:]
+    if "-h" in args or "--help" in args:
+        print(__doc__.strip()); return
+    use_json = "--json" in args
+    dry_run = "--dry-run" in args
+    series_id = None
+    in_reply_to = None
+
+    if "--series" in args:
+        idx = args.index("--series")
+        series_id = args[idx + 1] if idx + 1 < len(args) else None
+
+    if "--in-reply-to" in args:
+        idx = args.index("--in-reply-to")
+        in_reply_to = args[idx + 1] if idx + 1 < len(args) else None
+
+    # Check prerequisites
+    patches = find_patches()
+    if not patches:
+        msg = "没有补丁文件。请先运行 kt-format-patch。"
+        if use_json:
+            print(json.dumps({"error": msg}))
+        else:
+            print(msg, file=sys.stderr)
+        sys.exit(1)
+
+    if not shutil.which("git"):
+        print("错误: git 不可用", file=sys.stderr)
+        sys.exit(1)
+
+    email = user_email()
+    conf = load_email_conf()
+
+    # Series integration
+    if series_id:
+        ss = load_series_state(series_state_path())
+        s = ss.get("series", {}).get(series_id)
+        if s:
+            phase = s["phase"]
+            rounds = s["phases"].get(phase, {}).get("rounds", [])
+            # Auto in-reply-to for v2+
+            if rounds and not in_reply_to:
+                first_cover_mid = rounds[0].get("cover_message_id")
+                if first_cover_mid:
+                    in_reply_to = first_cover_mid
+
+    # Determine mode
+    mode = None
+    review_email = None
+    if "--self" in args:
+        mode = "self"
+    elif "--review" in args:
+        mode = "review"
+        idx = args.index("--review")
+        review_email = args[idx + 1] if idx + 1 < len(args) else conf.get("REVIEW_EMAIL")
+        if not review_email:
+            print("错误: --review 需要邮箱地址", file=sys.stderr)
+            sys.exit(1)
+    elif "--submit" in args:
+        mode = "submit"
+    else:
+        msg = "请指定模式: --self, --review EMAIL, 或 --submit"
+        if use_json:
+            print(json.dumps({"error": msg}))
+        else:
+            print(msg, file=sys.stderr)
+        sys.exit(1)
+
+    # Build recipient lists
+    to_list = []
+    cc_list = []
+
+    if mode == "self":
+        to_list = [email]
+    elif mode == "review":
+        to_list = [review_email]
+        cc_list = [email]
+    elif mode == "submit":
+        # Collect from get_maintainer
+        kd = kernel_dir()
+        all_recipients = set()
+        for p in patches:
+            if "0000-cover-letter" in p.name:
+                continue
+            maintainers = run_get_maintainer(p, kd)
+            all_recipients.update(maintainers)
+
+        to_list = ["Alex Shi <alexs@kernel.org>"]
+        cc_list = ["linux-doc@vger.kernel.org"]
+        # Add maintainer addresses
+        for r in all_recipients:
+            if r not in to_list and r not in cc_list:
+                cc_list.append(r)
+
+    result = {
+        "mode": mode,
+        "to": to_list,
+        "cc": cc_list,
+        "patches": [p.name for p in patches],
+        "dry_run": dry_run or (mode == "submit"),
+        "in_reply_to": in_reply_to,
+    }
+
+    # For submit, always do dry-run first
+    if mode == "submit" and not dry_run:
+        # First dry-run
+        rc, stdout, stderr = send_email(to_list, cc_list, patches,
+                                        dry_run=True, in_reply_to=in_reply_to)
+        result["dry_run_output"] = stdout + stderr
+        result["dry_run_returncode"] = rc
+
+        if use_json:
+            result["action_required"] = "confirm_submit"
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            sys.exit(0)
+        else:
+            print("=== Dry-run 预览 ===")
+            print(f"To: {', '.join(to_list)}")
+            print(f"Cc: {', '.join(cc_list)}")
+            print(f"补丁: {len(patches)} 个")
+            if in_reply_to:
+                print(f"In-Reply-To: {in_reply_to}")
+            print("\n⚠️  将发送到公开邮件列表！")
+            print("请在 AI 工具中确认后使用 --submit --dry-run=false 实际发送。")
+            sys.exit(0)
+
+    # Execute send
+    is_dry = dry_run
+    rc, stdout, stderr = send_email(to_list, cc_list, patches,
+                                    dry_run=is_dry, in_reply_to=in_reply_to)
+
+    result["returncode"] = rc
+    result["stdout"] = stdout
+    result["stderr"] = stderr
+    result["success"] = rc == 0
+
+    # Update series state if sent successfully and not dry-run
+    if rc == 0 and not is_dry and series_id:
+        mid = extract_message_id(stdout + stderr)
+        version = add_round(series_state_path(), series_id, cover_message_id=mid)
+        result["series_version"] = version
+        result["message_id"] = mid
+
+    if use_json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        if rc == 0:
+            action = "Dry-run" if is_dry else "发送"
+            print(f"{action}成功！")
+            print(f"  模式: {mode}")
+            print(f"  收件人: {', '.join(to_list)}")
+            if cc_list:
+                print(f"  Cc: {', '.join(cc_list)}")
+            print(f"  补丁: {len(patches)} 个")
+        else:
+            print(f"发送失败 (exit {rc})", file=sys.stderr)
+            if stderr:
+                print(stderr, file=sys.stderr)
+            sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

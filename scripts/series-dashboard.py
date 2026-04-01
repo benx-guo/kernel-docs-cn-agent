@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Series Dashboard TUI — visualize patch series tracking data."""
 
-import json
 import sys
 from pathlib import Path
+
+# Make lib/ importable
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from lib import project as _proj
+from lib import state as _state
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -11,7 +16,7 @@ from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.widgets import Footer, Header, Label, ListItem, ListView, Static
 
-STATE_FILE = Path(__file__).parent / "series-state.json"
+STATE_FILE = _proj.series_state_path()
 
 # Lifecycle phases in order
 LIFECYCLE = ["翻译", "检查", "补丁", "自审", "内审", "上游", "合并"]
@@ -33,10 +38,7 @@ STATUS_ICON = {
 
 def load_state() -> dict:
     """Load series-state.json, return empty structure on failure."""
-    try:
-        return json.loads(STATE_FILE.read_text())
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {"version": 1, "series": {}}
+    return _state.load_series_state(STATE_FILE)
 
 
 def build_lifecycle_bar(phase: str) -> str:
@@ -174,7 +176,7 @@ class SeriesDashboard(App):
 
     def _show_empty(self) -> None:
         detail = self.query_one("#detail", DetailPanel)
-        detail.update("No series found.\nCheck scripts/series-state.json")
+        detail.update("No series found.\nCheck data/series-state.json")
         lc = self.query_one("#lifecycle", LifecycleBar)
         lc.update("")
 

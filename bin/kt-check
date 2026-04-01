@@ -1,0 +1,237 @@
+#!/usr/bin/env python3
+"""kt-check — Translation quality checks.
+
+Usage:
+    kt-check [--file PATH] [--all] [--fix] [--json]
+
+Options:
+    --file PATH    Check a specific file (relative to project root or linux/)
+    --all          Check all modified zh_CN .rst files (default)
+    --fix          Auto-fix trailing whitespace and CRLF
+    --json         Output JSON
+"""
+
+import json
+import re
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from lib.project import root, kernel_dir, outgoing_dir
+from lib.cjk import check_line_widths
+from lib.git_helpers import git_lines
+from lib.patch import run_checkpatch
+
+
+def find_modified_files():
+    """Find modified zh_CN .rst files in the working tree."""
+    lines = git_lines("diff", "--name-only", "HEAD")
+    cached = git_lines("diff", "--cached", "--name-only")
+    all_files = set(lines + cached)
+    return sorted(f for f in all_files
+                  if "translations/zh_CN/" in f and f.endswith(".rst"))
+
+
+def resolve_path(path_str):
+    """Resolve a file path relative to project root or linux/."""
+    r = root()
+    p = Path(path_str)
+    if p.is_absolute() and p.is_file():
+        return p
+    # Try relative to project root
+    candidate = r / path_str
+    if candidate.is_file():
+        return candidate
+    # Try relative to linux/
+    candidate = kernel_dir() / path_str
+    if candidate.is_file():
+        return candidate
+    # Try as relative to Documentation/translations/zh_CN/
+    candidate = kernel_dir() / "Documentation" / "translations" / "zh_CN" / path_str
+    if candidate.is_file():
+        return candidate
+    return None
+
+
+def check_trailing_whitespace(filepath, fix=False):
+    """Check for trailing whitespace. Returns list of line numbers."""
+    lines_with_ws = []
+    content = Path(filepath).read_text(encoding="utf-8")
+    lines = content.split("\n")
+    changed = False
+
+    for i, line in enumerate(lines):
+        if line != line.rstrip():
+            lines_with_ws.append(i + 1)
+            if fix:
+                lines[i] = line.rstrip()
+                changed = True
+
+    if fix and changed:
+        Path(filepath).write_text("\n".join(lines), encoding="utf-8")
+
+    return lines_with_ws
+
+
+def check_tabs(filepath):
+    """Check for tab characters. Returns list of line numbers."""
+    tabs = []
+    with open(filepath, encoding="utf-8") as fh:
+        for i, line in enumerate(fh, 1):
+            if "\t" in line:
+                tabs.append(i)
+    return tabs
+
+
+def check_crlf(filepath, fix=False):
+    """Check for Windows line endings. Returns True if CRLF found."""
+    content = Path(filepath).read_bytes()
+    has_crlf = b"\r\n" in content
+    if fix and has_crlf:
+        Path(filepath).write_bytes(content.replace(b"\r\n", b"\n"))
+    return has_crlf
+
+
+def check_file(filepath, fix=False):
+    """Run all checks on a single file. Returns a result dict."""
+    filepath = str(filepath)
+    result = {
+        "file": filepath,
+        "trailing_whitespace": check_trailing_whitespace(filepath, fix=fix),
+        "tabs": check_tabs(filepath),
+        "line_width": check_line_widths(filepath),
+        "crlf": check_crlf(filepath, fix=fix),
+        "errors": 0,
+        "warnings": 0,
+    }
+
+    # Count issues
+    result["errors"] += len(result["trailing_whitespace"])
+    result["warnings"] += len(result["tabs"])
+    result["warnings"] += len(result["line_width"])
+    if result["crlf"]:
+        result["errors"] += 1
+
+    return result
+
+
+def check_patches():
+    """Run checkpatch on outgoing patches if they exist."""
+    od = outgoing_dir()
+    if not od.is_dir():
+        return []
+    patches = sorted(od.glob("*.patch"))
+    if not patches:
+        return []
+
+    results = []
+    kd = kernel_dir()
+    for patch in patches:
+        if "0000-cover-letter" in patch.name:
+            continue
+        r = run_checkpatch(patch, kd)
+        results.append({"patch": patch.name, **r})
+    return results
+
+
+def main():
+    args = sys.argv[1:]
+    if "-h" in args or "--help" in args:
+        print(__doc__.strip()); return
+    use_json = "--json" in args
+    fix = "--fix" in args
+
+    # Determine files to check
+    files = []
+    if "--file" in args:
+        idx = args.index("--file")
+        path_str = args[idx + 1] if idx + 1 < len(args) else None
+        if not path_str:
+            print("错误: --file 需要指定文件路径", file=sys.stderr)
+            sys.exit(1)
+        resolved = resolve_path(path_str)
+        if not resolved:
+            print(f"错误: 文件不存在: {path_str}", file=sys.stderr)
+            sys.exit(1)
+        files = [resolved]
+    else:
+        modified = find_modified_files()
+        files = []
+        kd = kernel_dir()
+        for f in modified:
+            fp = kd / f
+            if fp.is_file():
+                files.append(fp)
+        if not files:
+            if use_json:
+                print(json.dumps({"message": "没有修改过的文件", "results": []}))
+            else:
+                print("没有修改过的中文 .rst 文件。用 --file 指定文件。")
+            sys.exit(0)
+
+    results = []
+    total_errors = 0
+    total_warnings = 0
+
+    for f in files:
+        r = check_file(f, fix=fix)
+        results.append(r)
+        total_errors += r["errors"]
+        total_warnings += r["warnings"]
+
+    # Check patches too
+    patch_results = check_patches()
+
+    output = {
+        "results": results,
+        "patches": patch_results,
+        "total_errors": total_errors,
+        "total_warnings": total_warnings,
+        "fixed": fix,
+    }
+
+    if use_json:
+        # Serialize line_width dicts
+        for r in output["results"]:
+            r["line_width"] = [
+                {"line": v["line"], "width": v["width"]}
+                for v in r["line_width"]
+            ]
+        print(json.dumps(output, indent=2, ensure_ascii=False))
+    else:
+        for r in results:
+            print(f"\n{'='*60}")
+            print(f"文件: {r['file']}")
+            if r["trailing_whitespace"]:
+                action = "（已修复）" if fix else ""
+                print(f"  行尾空白{action}: {len(r['trailing_whitespace'])} 行"
+                      f" ({', '.join(str(l) for l in r['trailing_whitespace'][:10])})")
+            if r["tabs"]:
+                print(f"  Tab 字符: {len(r['tabs'])} 行")
+            if r["line_width"]:
+                print(f"  行宽超限: {len(r['line_width'])} 行")
+                for v in r["line_width"][:5]:
+                    print(f"    Line {v['line']}: {v['width']} 列")
+            if r["crlf"]:
+                action = "（已修复）" if fix else ""
+                print(f"  CRLF 换行{action}")
+            if not (r["trailing_whitespace"] or r["tabs"] or r["line_width"] or r["crlf"]):
+                print("  ✓ 全部通过")
+
+        if patch_results:
+            print(f"\n{'='*60}")
+            print("补丁检查:")
+            for pr in patch_results:
+                print(f"  {pr['patch']}: {pr['errors']} errors, {pr['warnings']} warnings")
+
+        print(f"\n总计: {total_errors} errors, {total_warnings} warnings")
+        if total_errors > 0 and not fix:
+            fixable = any(r["trailing_whitespace"] or r["crlf"] for r in results)
+            if fixable:
+                print("提示: 用 --fix 自动修复行尾空白和 CRLF")
+
+    sys.exit(1 if total_errors > 0 else 0)
+
+
+if __name__ == "__main__":
+    main()

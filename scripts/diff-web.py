@@ -14,10 +14,16 @@ import http.server
 import json
 import mimetypes
 import os
-import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+# Make lib/ importable
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from lib import project as _proj
+from lib import state as _state
+from lib import git_helpers as _git
 
 try:
     from docutils.core import publish_parts
@@ -25,10 +31,8 @@ try:
 except ImportError:
     HAS_DOCUTILS = False
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = SCRIPT_DIR.parent
-KERNEL_DIR = PROJECT_DIR / "linux"
-WORKFLOW_STATE_FILE = SCRIPT_DIR / "workflow-state.json"
+KERNEL_DIR = _proj.kernel_dir()
+WORKFLOW_STATE_FILE = _proj.workflow_state_path()
 
 DEFAULT_PORT = 8080
 
@@ -51,100 +55,34 @@ WORKFLOW_STAGES = [
 
 def _load_workflow_state():
     """Load workflow state from JSON file."""
-    if not WORKFLOW_STATE_FILE.is_file():
-        return {}
-    try:
-        data = json.loads(WORKFLOW_STATE_FILE.read_text(encoding="utf-8"))
-        return data.get("files", {})
-    except (json.JSONDecodeError, OSError):
-        return {}
+    return _state.load_workflow_state(WORKFLOW_STATE_FILE).get("files", {})
 
 
 def _save_workflow_state(files_state):
     """Save workflow state to JSON file."""
     data = {"version": 1, "files": files_state}
-    WORKFLOW_STATE_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    _state._save(WORKFLOW_STATE_FILE, data)
 
 
 def git(*args):
     """Run a git command in the kernel directory and return stdout."""
-    result = subprocess.run(
-        ["git"] + list(args),
-        cwd=KERNEL_DIR,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout
+    return _git.git_stdout(*args)
 
 
 def _build_zh_commit_map():
     """Build a map of zh_CN file -> (last_commit_hash, date) in one git pass."""
-    # Get full log with file names for all zh_CN files
-    raw = git(
-        "log", "--format=%H %as", "--name-only",
-        "--diff-filter=ACMR",
-        "--", "Documentation/translations/zh_CN/",
-    )
-    file_map = {}  # rel_path -> (commit_hash, date)
-    current_commit = None
-    current_date = None
-
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        # Lines with a space and 40+ hex chars are commit headers
-        parts = line.split(" ", 1)
-        if len(parts) == 2 and len(parts[0]) == 40:
-            current_commit = parts[0]
-            current_date = parts[1]
-        elif current_commit and line.startswith("Documentation/translations/zh_CN/"):
-            if line not in file_map:  # First occurrence = most recent commit
-                file_map[line] = (current_commit, current_date)
-
-    return file_map
+    return _git.build_zh_commit_map()
 
 
 def _check_english_commits(args):
     """Check how many English commits exist since a given commit. For thread pool."""
     en_rel, zh_commit = args
-    count_str = git("rev-list", "--count", f"{zh_commit}..HEAD", "--", en_rel).strip()
-    try:
-        return int(count_str)
-    except ValueError:
-        return 0
+    return _git.english_commits_since(en_rel, zh_commit)
 
 
 def _get_working_tree_files():
     """Detect working tree changes in zh_CN files (unstaged + staged + untracked)."""
-    zh_prefix = "Documentation/translations/zh_CN/"
-    files = set()
-
-    # Unstaged changes
-    raw = git("diff", "--name-only", "--", zh_prefix)
-    for f in raw.splitlines():
-        f = f.strip()
-        if f:
-            files.add(f)
-
-    # Staged changes
-    raw = git("diff", "--cached", "--name-only", "--", zh_prefix)
-    for f in raw.splitlines():
-        f = f.strip()
-        if f:
-            files.add(f)
-
-    # Untracked new files
-    raw = git("ls-files", "--others", "--exclude-standard", "--", zh_prefix)
-    for f in raw.splitlines():
-        f = f.strip()
-        if f:
-            files.add(f)
-
-    return files
+    return _git.working_tree_zh_files()
 
 
 def _find_missing_files(zh_file_set):

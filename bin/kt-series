@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+"""kt-series — Patch series lifecycle management.
+
+Usage:
+    kt-series [--list | --show ID | --create | --dashboard] [--json]
+
+Options:
+    --list          List active series (default)
+    --show ID       Show detailed status for a series
+    --create        Create a new series from current commits
+    --dashboard     Show full dashboard view
+    --json          Output JSON
+"""
+
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from lib.project import kernel_dir, outgoing_dir, series_state_path
+from lib.git_helpers import git_lines
+from lib.state import (
+    load_series_state, save_series_state, list_active_series,
+    get_series, create_series,
+)
+
+
+LIFECYCLE = ["翻译", "检查", "补丁", "自审", "内审", "上游", "合并"]
+PHASE_INDEX = {"internal_review": 4, "upstream": 5, "merged": 6}
+STATUS_ICON = {"approved": "✅", "changes_requested": "❌", "no_feedback": "⏳"}
+
+
+def do_list(use_json):
+    """List active series."""
+    active = list_active_series(series_state_path())
+    if use_json:
+        result = []
+        for sid, s in active:
+            phase = s["phase"]
+            phase_data = s["phases"].get(phase, {})
+            rounds = phase_data.get("rounds", [])
+            # Count action items
+            action_count = 0
+            if rounds:
+                for p in rounds[-1].get("per_patch", {}).values():
+                    action_count += len(p.get("action_items", []))
+            result.append({
+                "id": sid,
+                "subject": s.get("subject", ""),
+                "phase": phase,
+                "status": phase_data.get("status", "?"),
+                "files": len(s.get("files", [])),
+                "version": rounds[-1]["version"] if rounds else 0,
+                "action_items": action_count,
+            })
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return
+
+    if not active:
+        print("当前没有活跃的补丁系列。")
+        return
+
+    for sid, s in active:
+        phase = s["phase"]
+        phase_data = s["phases"].get(phase, {})
+        status = phase_data.get("status", "?")
+        rounds = phase_data.get("rounds", [])
+        version = f"v{rounds[-1]['version']}" if rounds else "-"
+
+        action_count = 0
+        if rounds:
+            for p in rounds[-1].get("per_patch", {}).values():
+                action_count += len(p.get("action_items", []))
+
+        print(f"{sid}")
+        print(f"  主题: {s.get('subject', '?')}")
+        print(f"  阶段: {phase} / {status}")
+        print(f"  文件: {len(s.get('files', []))} 个")
+        print(f"  版本: {version}")
+        if action_count:
+            print(f"  待处理: {action_count} 个 action items")
+        print()
+
+
+def do_show(series_id, use_json):
+    """Show detailed status for a series."""
+    s = get_series(series_state_path(), series_id)
+    if not s:
+        msg = f"系列 '{series_id}' 不存在"
+        if use_json:
+            print(json.dumps({"error": msg}))
+        else:
+            print(msg, file=sys.stderr)
+        sys.exit(1)
+
+    if use_json:
+        print(json.dumps({"id": series_id, **s}, indent=2, ensure_ascii=False))
+        return
+
+    phase = s["phase"]
+    phase_data = s["phases"].get(phase, {})
+    rounds = phase_data.get("rounds", [])
+
+    print(f"系列: {series_id}")
+    print(f"主题: {s.get('subject', '?')}")
+    print(f"阶段: {phase} / {phase_data.get('status', '?')}")
+    print(f"文件: {', '.join(s.get('files', []))}")
+    print(f"Commits: {', '.join(s.get('commits', []))}")
+
+    if rounds:
+        latest = rounds[-1]
+        print(f"\n当前版本: v{latest['version']} (发送于 {latest.get('sent_at', '?')})")
+        if latest.get("cover_message_id"):
+            print(f"Cover Message-ID: {latest['cover_message_id']}")
+
+        print("\n补丁状态:")
+        per_patch = latest.get("per_patch", {})
+        for num in sorted(per_patch.keys(), key=lambda x: int(x)):
+            p = per_patch[num]
+            icon = STATUS_ICON.get(p["status"], "?")
+            rb = ", ".join(p.get("reviewed_by", []))
+            rb_str = f"  [Reviewed-by: {rb}]" if rb else ""
+            print(f"  {icon} {num}: {p['file']}  ({p['status']}){rb_str}")
+            for item in p.get("action_items", []):
+                print(f"      → {item}")
+
+    # Round history
+    all_rounds = []
+    for pk in ("internal_review", "upstream"):
+        for rd in s["phases"].get(pk, {}).get("rounds", []):
+            all_rounds.append((pk, rd))
+
+    if len(all_rounds) > 1:
+        print("\n历史:")
+        for pk, rd in all_rounds:
+            print(f"  {pk} v{rd['version']} — {rd.get('sent_at', '?')}")
+
+
+def do_create(use_json):
+    """Create a new series from current commits and outgoing patches."""
+    commits = git_lines("log", "--oneline", "docs-next..HEAD")
+    if not commits:
+        msg = "没有 commit。请先提交翻译。"
+        if use_json:
+            print(json.dumps({"error": msg}))
+        else:
+            print(msg, file=sys.stderr)
+        sys.exit(1)
+
+    # Extract files from commits
+    files_raw = git_lines("log", "--name-only", "--format=", "docs-next..HEAD")
+    zh_files = sorted(set(
+        f.replace("Documentation/translations/zh_CN/", "")
+        for f in files_raw
+        if f.startswith("Documentation/translations/zh_CN/") and f.endswith(".rst")
+    ))
+
+    commit_hashes = [line.split()[0] for line in commits]
+
+    # Generate series ID
+    import re
+    from datetime import datetime, timezone
+    subdirs = set()
+    for f in zh_files:
+        parts = f.split("/")
+        if len(parts) > 1:
+            subdirs.add(parts[0])
+    subdir_name = "-".join(sorted(subdirs)) if subdirs else "misc"
+    date_suffix = datetime.now(timezone.utc).strftime("%Y-%m")
+    series_id = f"{subdir_name}-{date_suffix}"
+
+    # Subject
+    if len(zh_files) == 1:
+        subject = f"docs/zh_CN: translate {zh_files[0]}"
+    else:
+        subject = f"docs/zh_CN: update {subdir_name}/ subsystem translations"
+
+    create_series(series_state_path(), series_id, subject, zh_files, commit_hashes)
+
+    result = {"id": series_id, "subject": subject, "files": zh_files,
+              "commits": commit_hashes}
+
+    if use_json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        print(f"已创建系列: {series_id}")
+        print(f"  主题: {subject}")
+        print(f"  文件: {len(zh_files)} 个")
+        print(f"  Commits: {len(commit_hashes)} 个")
+
+
+def do_dashboard(use_json):
+    """Show full dashboard."""
+    active = list_active_series(series_state_path())
+
+    if use_json:
+        # Reuse list format with full data
+        ss = load_series_state(series_state_path())
+        print(json.dumps(ss, indent=2, ensure_ascii=False))
+        return
+
+    if not active:
+        print("当前没有活跃的补丁系列。用 kt-series --create 创建新系列。")
+        return
+
+    for i, (sid, s) in enumerate(active):
+        if i > 0:
+            print("\n---\n")
+
+        phase = s["phase"]
+        phase_data = s["phases"].get(phase, {})
+        rounds = phase_data.get("rounds", [])
+
+        print(f"## {sid}")
+        print(f"**{s.get('subject', '?')}**\n")
+        print(f"| 字段 | 值 |")
+        print(f"|------|----|")
+        print(f"| 阶段 | {phase} |")
+        print(f"| 状态 | {phase_data.get('status', '?')} |")
+        print(f"| 文件 | {len(s.get('files', []))} 个 |")
+        if rounds:
+            latest = rounds[-1]
+            print(f"| 版本 | v{latest['version']}（{latest.get('sent_at', '?')}） |")
+        print()
+
+        # Patches table
+        if rounds:
+            latest = rounds[-1]
+            per_patch = latest.get("per_patch", {})
+            print("| # | 文件 | 状态 | Reviewed-by |")
+            print("|---|------|------|-------------|")
+            for num in sorted(per_patch.keys(), key=lambda x: int(x)):
+                p = per_patch[num]
+                icon = STATUS_ICON.get(p["status"], "?")
+                rb = ", ".join(p.get("reviewed_by", [])) or "—"
+                print(f"| {num} | {p['file']} | {icon} {p['status']} | {rb} |")
+            print()
+
+            # Action items
+            items = []
+            for num in sorted(per_patch.keys(), key=lambda x: int(x)):
+                for item in per_patch[num].get("action_items", []):
+                    items.append(f"- [ ] {item}（patch {num}）")
+            if items:
+                print("待办事项:")
+                for item in items:
+                    print(item)
+                print()
+
+        # Lifecycle bar
+        idx = PHASE_INDEX.get(phase, 0)
+        parts = []
+        for i, name in enumerate(LIFECYCLE):
+            if i == idx:
+                parts.append(f"【{name}】")
+            elif i < idx:
+                parts.append(f"{name} ✓")
+            else:
+                parts.append(name)
+        print(" → ".join(parts))
+
+
+def main():
+    args = sys.argv[1:]
+    if "-h" in args or "--help" in args:
+        print(__doc__.strip()); return
+    use_json = "--json" in args
+
+    if "--show" in args:
+        idx = args.index("--show")
+        series_id = args[idx + 1] if idx + 1 < len(args) else None
+        if not series_id:
+            print("错误: --show 需要系列 ID", file=sys.stderr)
+            sys.exit(1)
+        do_show(series_id, use_json)
+    elif "--create" in args:
+        do_create(use_json)
+    elif "--dashboard" in args:
+        do_dashboard(use_json)
+    else:
+        do_list(use_json)
+
+
+if __name__ == "__main__":
+    main()

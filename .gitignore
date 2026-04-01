@@ -8,12 +8,16 @@ outgoing/
 memory/
 
 # Runtime state (user-specific)
-scripts/series-state.json
-scripts/workflow-state.json
+data/
+
+# User email config (may contain passwords)
+config/email.conf
 
 # Python
 __pycache__/
 *.pyc
 
-# User-specific Claude settings
-.claude/settings.local.json
+# Tool-specific IDE/agent configs
+.claude/
+.cursorrules
+.vscode/

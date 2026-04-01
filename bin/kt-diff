@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""kt-diff — Translation status analysis.
+
+Usage:
+    kt-diff [--status] [--dir DIR] [--detail FILE] [--json]
+
+Options:
+    --status         Global overview, top 10 outdated files
+    --dir DIR        Limit to a subdirectory
+    --detail FILE    Show detailed diff for a specific file
+    --json           Output JSON
+"""
+
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from lib.project import kernel_dir, en_doc_dir, zh_cn_dir
+from lib.git_helpers import (
+    build_zh_commit_map, english_commits_since_batch,
+    last_commit_for_file, commits_between, diff_between,
+    is_ancestor, head_oneline,
+)
+
+
+def get_status(subdir=None):
+    """Compute translation status for all files (or a subdirectory)."""
+    kd = kernel_dir()
+    en_base = en_doc_dir()
+    zh_base = zh_cn_dir()
+
+    # Count English files
+    en_files = []
+    for rst in sorted(en_base.rglob("*.rst")):
+        rel = rst.relative_to(en_base)
+        if str(rel).startswith("translations/"):
+            continue
+        if subdir and not str(rel).startswith(subdir.rstrip("/") + "/"):
+            continue
+        en_files.append(str(rel))
+
+    # Count and map Chinese files
+    zh_file_set = set()
+    file_map = build_zh_commit_map()
+
+    candidates = []
+    up_to_date = []
+
+    if zh_base.is_dir():
+        for zh_file in sorted(zh_base.rglob("*.rst")):
+            rel = zh_file.relative_to(zh_base)
+            rel_str = str(rel)
+            if subdir and not rel_str.startswith(subdir.rstrip("/") + "/"):
+                continue
+            zh_file_set.add(rel_str)
+
+            en_file = en_base / rel
+            zh_rel = str(zh_file.relative_to(kd))
+            entry = file_map.get(zh_rel)
+
+            if not en_file.exists() or not entry:
+                up_to_date.append({"file": rel_str, "zh_date": entry[1] if entry else None})
+                continue
+
+            zh_commit, zh_date = entry
+            en_rel = str(en_file.relative_to(kd))
+            candidates.append((rel_str, en_rel, zh_commit, zh_date))
+
+    # Batch check commits
+    work_items = [(en_rel, zh_commit) for _, en_rel, zh_commit, _ in candidates]
+    counts = english_commits_since_batch(work_items) if work_items else []
+
+    results = []
+    for (rel_str, _, zh_commit, zh_date), count in zip(candidates, counts):
+        merged = is_ancestor(zh_commit[:12], "docs-next")
+        results.append({
+            "file": rel_str,
+            "status": "outdated" if count > 0 else "up_to_date",
+            "commits_behind": count,
+            "zh_last_updated": zh_date,
+            "zh_commit": zh_commit[:12],
+            "merged": merged,
+        })
+
+    for item in up_to_date:
+        results.append({
+            "file": item["file"],
+            "status": "up_to_date",
+            "commits_behind": 0,
+            "zh_last_updated": item["zh_date"],
+            "zh_commit": None,
+            "merged": True,
+        })
+
+    # Missing files
+    missing = [f for f in en_files if f not in zh_file_set]
+
+    return {
+        "head": head_oneline(),
+        "total_english": len(en_files),
+        "total_zh": len(zh_file_set),
+        "coverage": round(len(zh_file_set) / len(en_files) * 100, 1) if en_files else 0,
+        "files": sorted(results, key=lambda x: -(x["commits_behind"] or 0)),
+        "missing": missing,
+    }
+
+
+def get_detail(file_path):
+    """Get detailed diff info for a single file."""
+    kd = kernel_dir()
+    en_rel = f"Documentation/{file_path}"
+    zh_rel = f"Documentation/translations/zh_CN/{file_path}"
+
+    zh_full = kd / zh_rel
+    en_full = kd / en_rel
+
+    if not en_full.is_file():
+        return {"error": f"英文文件不存在: {en_rel}"}
+
+    if not zh_full.is_file():
+        return {"error": f"此文件尚未翻译", "file": file_path, "translated": False}
+
+    zh_commit = last_commit_for_file(zh_rel, fmt="%H")
+    zh_date = last_commit_for_file(zh_rel, fmt="%as")
+    zh_subject = last_commit_for_file(zh_rel, fmt="%s")
+
+    if not zh_commit:
+        return {"file": file_path, "translated": True, "zh_commit": None,
+                "changes": [], "diff": ""}
+
+    changes = commits_between(zh_commit, "HEAD", path=en_rel)
+    diff = diff_between(zh_commit, "HEAD", path=en_rel) if changes else ""
+    merged = is_ancestor(zh_commit[:12], "docs-next")
+
+    return {
+        "file": file_path,
+        "translated": True,
+        "zh_commit": zh_commit[:12],
+        "zh_date": zh_date,
+        "zh_subject": zh_subject,
+        "merged": merged,
+        "changes_count": len(changes),
+        "changes": changes,
+        "diff": diff,
+    }
+
+
+def main():
+    args = sys.argv[1:]
+    if "-h" in args or "--help" in args:
+        print(__doc__.strip()); return
+    use_json = "--json" in args
+
+    if "--detail" in args:
+        idx = args.index("--detail")
+        file_path = args[idx + 1] if idx + 1 < len(args) else None
+        if not file_path:
+            print("错误: --detail 需要指定文件路径", file=sys.stderr)
+            sys.exit(1)
+        result = get_detail(file_path)
+        if use_json:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            if "error" in result:
+                print(result["error"])
+                sys.exit(1)
+            print(f"文件: {result['file']}")
+            print(f"中文最后更新: {result.get('zh_date', '?')} ({result.get('zh_commit', '?')})")
+            print(f"状态: {'已合并' if result.get('merged') else '本地未合并'}")
+            print(f"英文变更: {result['changes_count']} 个 commit")
+            if result["changes"]:
+                print("\n变更列表:")
+                for c in result["changes"]:
+                    print(f"  {c}")
+            if result["diff"]:
+                print(f"\nDiff:\n{result['diff']}")
+        sys.exit(0)
+
+    # --status or --dir
+    subdir = None
+    if "--dir" in args:
+        idx = args.index("--dir")
+        subdir = args[idx + 1] if idx + 1 < len(args) else None
+
+    result = get_status(subdir)
+
+    if use_json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        print(f"HEAD: {result['head']}")
+        print(f"英文文件: {result['total_english']}  中文文件: {result['total_zh']}  覆盖率: {result['coverage']}%")
+
+        outdated = [f for f in result["files"] if f["status"] == "outdated"]
+        if outdated:
+            top = outdated[:10] if not subdir else outdated
+            print(f"\n过期文件 (top {len(top)}):")
+            for f in top:
+                status_str = "已合并" if f["merged"] else "本地"
+                print(f"  {f['file']}  {f['commits_behind']} commits behind  "
+                      f"({f['zh_last_updated']}, {f['zh_commit']}, {status_str})")
+
+        if result["missing"]:
+            show = result["missing"][:10] if not subdir else result["missing"]
+            print(f"\n缺失文件 ({len(result['missing'])} 总计, 显示 {len(show)}):")
+            for f in show:
+                print(f"  {f}")
+
+
+if __name__ == "__main__":
+    main()
