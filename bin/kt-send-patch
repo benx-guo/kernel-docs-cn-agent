@@ -2,12 +2,13 @@
 """kt-send-patch — Send translation patches via email.
 
 Usage:
-    kt-send-patch <--self | --review EMAIL | --submit> [--dry-run] [--in-reply-to ID] [--series ID] [--json]
+    kt-send-patch <--self | --review [EMAIL] | --submit> [--confirm] [--dry-run] [--in-reply-to ID] [--series ID] [--json]
 
 Options:
     --self               Send to yourself for testing
-    --review EMAIL       Send to internal reviewer
-    --submit             Submit to upstream mailing list
+    --review [EMAIL]     Send to internal reviewer (auto-detects from previous round)
+    --submit             Show git send-email command for upstream (manual only)
+    --confirm            Confirm and actually send (required for --review)
     --dry-run            Dry-run only (don't actually send)
     --in-reply-to ID     Thread patches under a previous message
     --series ID          Read metadata from series-state
@@ -257,39 +258,71 @@ def main():
             if r not in to_list and r not in cc_list:
                 cc_list.append(r)
 
+    confirmed = "--confirm" in args
+
     result = {
         "mode": mode,
         "to": to_list,
         "cc": cc_list,
         "patches": [p.name for p in patches],
-        "dry_run": dry_run or (mode == "submit"),
+        "patch_count": len(patches),
         "in_reply_to": in_reply_to,
     }
 
-    # For submit, always do dry-run first
-    if mode == "submit" and not dry_run:
-        # First dry-run
-        rc, stdout, stderr = send_email(to_list, cc_list, patches,
-                                        dry_run=True, in_reply_to=in_reply_to)
-        result["dry_run_output"] = stdout + stderr
-        result["dry_run_returncode"] = rc
+    # --submit: never send automatically; output the command for user to run manually
+    if mode == "submit":
+        cmd_parts = ["git", "send-email"]
+        for addr in to_list:
+            cmd_parts.append(f"--to='{addr}'")
+        for addr in cc_list:
+            cmd_parts.append(f"--cc='{addr}'")
+        cmd_parts.append("--confirm=never")
+        if in_reply_to:
+            mid = in_reply_to.strip("<>")
+            cmd_parts.append(f"--in-reply-to='<{mid}>'")
+        cmd_parts.extend(str(p) for p in patches)
+        send_cmd = " \\\n    ".join(cmd_parts)
+
+        result["action_required"] = "manual_submit"
+        result["command"] = " ".join(cmd_parts)
 
         if use_json:
-            result["action_required"] = "confirm_submit"
             print(json.dumps(result, indent=2, ensure_ascii=False))
-            sys.exit(0)
         else:
-            print("=== Dry-run 预览 ===")
-            print(f"To: {', '.join(to_list)}")
-            print(f"Cc: {', '.join(cc_list)}")
-            print(f"补丁: {len(patches)} 个")
+            print("=== 上游提交（需手动发送）===")
+            print(f"  To:  {', '.join(to_list)}")
+            if cc_list:
+                print(f"  Cc:  {', '.join(cc_list)}")
+            print(f"  补丁: {len(patches)} 个")
             if in_reply_to:
-                print(f"In-Reply-To: {in_reply_to}")
-            print("\n⚠️  将发送到公开邮件列表！")
-            print("请在 AI 工具中确认后使用 --submit --dry-run=false 实际发送。")
-            sys.exit(0)
+                print(f"  In-Reply-To: {in_reply_to}")
+            if series_id:
+                print(f"  系列: {series_id}")
+            print(f"\n请在内核目录下手动执行以下命令:\n")
+            print(f"cd {kernel_dir()}")
+            print(send_cmd)
+        sys.exit(0)
 
-    # Execute send
+    # --review requires --confirm to actually send
+    if mode == "review" and not confirmed and not dry_run:
+        result["action_required"] = "confirm_review"
+
+        if use_json:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            print("=== 发送预览（内部审阅者）===")
+            print(f"  To:  {', '.join(to_list)}")
+            if cc_list:
+                print(f"  Cc:  {', '.join(cc_list)}")
+            print(f"  补丁: {len(patches)} 个")
+            if in_reply_to:
+                print(f"  In-Reply-To: {in_reply_to}")
+            if series_id:
+                print(f"  系列: {series_id}")
+            print(f"\n确认发送请加 --confirm 参数重新运行。")
+        sys.exit(0)
+
+    # Execute send (--self and --review --confirm only)
     is_dry = dry_run
     rc, stdout, stderr = send_email(to_list, cc_list, patches,
                                     dry_run=is_dry, in_reply_to=in_reply_to)
@@ -299,8 +332,8 @@ def main():
     result["stderr"] = stderr
     result["success"] = rc == 0
 
-    # Update series state only for review/submit sends (not --self test sends)
-    if rc == 0 and not is_dry and series_id and mode in ("review", "submit"):
+    # Update series state for review sends
+    if rc == 0 and not is_dry and series_id and mode == "review":
         from lib.git_helpers import git_stdout
         mid = extract_message_id(stdout + stderr)
         tip = git_stdout("log", "-1", "--format=%H")
