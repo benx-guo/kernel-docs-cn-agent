@@ -1,0 +1,19 @@
+# Kernel source tree (cloned by /setup)
+linux/
+
+# Generated patches
+outgoing/
+
+# Claude auto-memory (user-specific)
+memory/
+
+# Runtime state (user-specific)
+scripts/series-state.json
+scripts/workflow-state.json
+
+# Python
+__pycache__/
+*.pyc
+
+# User-specific Claude settings
+.claude/settings.local.json

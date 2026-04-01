@@ -1,0 +1,41 @@
+# email.conf — git send-email configuration for kernel patch submission
+# Copy this file to config/email.conf and fill in your settings.
+#
+# This file is sourced by send-patch.sh for any custom overrides.
+# The primary configuration should be in your git config.
+
+# ============================================================
+# Option 1: Gmail SMTP (recommended for most users)
+# ============================================================
+# Run these git commands to configure:
+#
+#   git config --global sendemail.smtpserver smtp.gmail.com
+#   git config --global sendemail.smtpserverport 587
+#   git config --global sendemail.smtpencryption tls
+#   git config --global sendemail.smtpuser your.email@gmail.com
+#
+# Note: You need an App Password for Gmail.
+# Go to: https://myaccount.google.com/apppasswords
+# Generate a password for "Mail" and use it when prompted.
+
+# ============================================================
+# Option 2: Generic SMTP
+# ============================================================
+#   git config --global sendemail.smtpserver mail.example.com
+#   git config --global sendemail.smtpserverport 587
+#   git config --global sendemail.smtpencryption tls
+#   git config --global sendemail.smtpuser username
+#   git config --global sendemail.smtppass password
+
+# ============================================================
+# Common settings (run these regardless of SMTP provider)
+# ============================================================
+#   git config --global sendemail.confirm never
+#   git config --global sendemail.chainreplyto false
+#   git config --global sendemail.thread true
+
+# ============================================================
+# Internal review email (used by send-patch.sh --review)
+# ============================================================
+# Uncomment and set to your internal review address:
+# REVIEW_EMAIL="reviewer@example.com"

@@ -1,0 +1,255 @@
+# Linux 内核术语表 (Chinese-English Glossary)
+# Format: English term | 中文翻译 | Notes
+#
+# This glossary ensures consistent terminology across zh_CN translations.
+# Keep sorted alphabetically by English term.
+# Lines starting with # are comments.
+
+# === A ===
+abstraction layer | 抽象层 |
+access control | 访问控制 |
+address space | 地址空间 |
+allocator | 分配器 |
+architecture | 架构/体系结构 |
+atomic operation | 原子操作 |
+
+# === B ===
+backtrace | 回溯 |
+big endian | 大端 |
+block device | 块设备 |
+boot loader | 引导加载程序 |
+bottom half | 下半部 |
+buffer | 缓冲区 |
+bug | 缺陷 | 不翻译亦可
+bus | 总线 |
+busy wait | 忙等待 |
+
+# === C ===
+cache | 缓存 |
+callback | 回调 |
+caller | 调用者 |
+capability | 权能 |
+character device | 字符设备 |
+checksum | 校验和 |
+cgroup | 控制组 | 常保留英文 cgroup
+clone | 克隆 |
+commit | 提交 | git 术语保留英文亦可
+compile | 编译 |
+completion | 完成量 | 内核同步原语
+concurrency | 并发 |
+configuration | 配置 |
+context switch | 上下文切换 |
+control group | 控制组 |
+controller | 控制器 |
+core dump | 核心转储 |
+CPU | CPU | 不翻译
+critical section | 临界区 |
+
+# === D ===
+daemon | 守护进程 |
+data structure | 数据结构 |
+deadlock | 死锁 |
+debug | 调试 |
+deprecated | 废弃的 |
+descriptor | 描述符 |
+device driver | 设备驱动 |
+device tree | 设备树 |
+DMA | DMA | 不翻译，全称: 直接内存访问
+dmesg | dmesg | 不翻译
+
+# === E ===
+embedded | 嵌入式 |
+endianness | 字节序 |
+entry point | 入口点 |
+errno | errno | 不翻译
+event | 事件 |
+exception | 异常 |
+executable | 可执行文件 |
+
+# === F ===
+fair scheduling | 公平调度 |
+fault | 故障/缺页 | 视上下文
+feature | 特性/功能 |
+file descriptor | 文件描述符 |
+file system | 文件系统 |
+firmware | 固件 |
+flag | 标志 |
+flush | 刷新 |
+fork | 复刻/派生 | 进程 fork 可保留英文
+frame | 帧 |
+free | 释放 |
+function | 函数 |
+
+# === G ===
+garbage collection | 垃圾回收 |
+GPIO | GPIO | 不翻译
+governor | 调节器 | CPU 频率调节
+
+# === H ===
+handler | 处理程序 |
+hardware | 硬件 |
+hash | 哈希 |
+header | 头/头文件 |
+heap | 堆 |
+hook | 钩子 |
+hotplug | 热插拔 |
+hugepage | 巨页 |
+
+# === I ===
+idle | 空闲 |
+infrastructure | 基础设施 |
+inode | inode | 不翻译
+input/output | 输入/输出 |
+instance | 实例 |
+interface | 接口 |
+interrupt | 中断 |
+ioctl | ioctl | 不翻译
+IPC | 进程间通信 |
+IRQ | IRQ | 不翻译, 中断请求
+
+# === K ===
+kernel | 内核 |
+kernel module | 内核模块 |
+kernel space | 内核空间 |
+kthread | 内核线程 |
+
+# === L ===
+latency | 延迟 |
+linked list | 链表 |
+little endian | 小端 |
+livelock | 活锁 |
+lock | 锁 |
+log | 日志 |
+
+# === M ===
+maintainer | 维护者 |
+mapping | 映射 |
+memory | 内存 |
+memory barrier | 内存屏障 |
+memory leak | 内存泄漏 |
+memory management | 内存管理 |
+memory-mapped I/O | 内存映射 I/O |
+merge | 合并 |
+message queue | 消息队列 |
+metadata | 元数据 |
+MMU | MMU | 内存管理单元
+mount | 挂载 |
+mutex | 互斥锁 |
+
+# === N ===
+namespace | 命名空间 |
+netfilter | netfilter | 不翻译
+node | 节点 |
+NUMA | NUMA | 非统一内存访问
+
+# === O ===
+offset | 偏移量 |
+OOM | OOM | 内存不足
+opcode | 操作码 |
+overhead | 开销 |
+
+# === P ===
+page | 页 |
+page fault | 缺页异常 |
+page table | 页表 |
+panic | 内核恐慌 | 常保留 panic
+patch | 补丁 |
+PCI | PCI | 不翻译
+performance | 性能 |
+permission | 权限 |
+PID | PID | 进程标识符
+pin | 引脚/固定 | 视上下文
+pipe | 管道 |
+platform | 平台 |
+plugin | 插件 |
+pointer | 指针 |
+polling | 轮询 |
+preemption | 抢占 |
+priority | 优先级 |
+probe | 探测 |
+process | 进程 |
+profiling | 性能分析 |
+
+# === Q ===
+queue | 队列 |
+
+# === R ===
+race condition | 竞态条件 |
+read-copy-update | RCU | 保留缩写
+rebase | 变基 | git 术语
+reference count | 引用计数 |
+register | 寄存器 |
+release | 发布/释放 | 视上下文
+repository | 仓库 |
+request | 请求 |
+resource | 资源 |
+root | 根/root | 视上下文
+routine | 例程 |
+RST | RST | reStructuredText，不翻译
+runtime | 运行时 |
+RWlock | 读写锁 |
+
+# === S ===
+scheduler | 调度器 |
+section | 节/段 |
+semaphore | 信号量 |
+serial | 串行 |
+shared memory | 共享内存 |
+signal | 信号 |
+slab | slab | 不翻译
+sleep | 睡眠 |
+SMP | SMP | 对称多处理
+snapshot | 快照 |
+socket | 套接字 |
+softirq | 软中断 |
+source code | 源代码 |
+spinlock | 自旋锁 |
+stack | 栈 |
+starvation | 饥饿 |
+subsystem | 子系统 |
+swap | 交换 |
+symbol | 符号 |
+synchronization | 同步 |
+syscall | 系统调用 |
+sysfs | sysfs | 不翻译
+
+# === T ===
+task | 任务 |
+tasklet | tasklet | 不翻译
+thread | 线程 |
+throughput | 吞吐量 |
+tick | 时钟节拍 |
+timer | 定时器 |
+TLB | TLB | 翻译后备缓冲区
+top half | 上半部 |
+trace | 跟踪 |
+tracepoint | 跟踪点 |
+
+# === U ===
+upstream | 上游 |
+user space | 用户空间 |
+
+# === V ===
+virtual address | 虚拟地址 |
+virtual memory | 虚拟内存 |
+VFS | 虚拟文件系统 |
+VFIO | VFIO | 不翻译
+volatile | volatile | 不翻译
+
+# === W ===
+wait queue | 等待队列 |
+watchdog | 看门狗 |
+work queue | 工作队列 |
+workload | 工作负载 |
+wrapper | 封装 |
+
+# === X ===
+XDP | XDP | 不翻译
+
+# === Notes ===
+# 1. Terms marked "不翻译" should be kept in English in translations.
+# 2. When both English and Chinese are acceptable, prefer Chinese but
+#    include the English term in parentheses on first occurrence.
+# 3. Function names, variable names, file paths, and command names
+#    are NEVER translated.
+# 4. Acronyms (CPU, DMA, IRQ, etc.) are kept in English.
