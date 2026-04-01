@@ -2,7 +2,7 @@
 """kt-series — Patch series lifecycle management.
 
 Usage:
-    kt-series [--list | --show ID | --create | --delete ID | --advance ID | --current | --dashboard] [--json]
+    kt-series [--list | --show ID | --create | --delete ID | --advance ID | --diff ID | --current | --dashboard] [--json]
 
 Options:
     --list          List active series (default)
@@ -10,6 +10,7 @@ Options:
     --create        Create a new series from current commits
     --delete ID     Delete a series and its work branch
     --advance ID    Advance series to the next phase
+    --diff ID       Show range-diff between current and previous version
     --current       Show status of the series on the current branch
     --dashboard     Show full dashboard view
     --json          Output JSON
@@ -22,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib.project import kernel_dir, outgoing_dir, series_state_path
 from lib.git_helpers import (
-    git_lines, current_branch, branch_exists, create_branch,
+    git, git_lines, git_stdout, current_branch, branch_exists, create_branch,
     checkout, delete_branch, work_branch_name, series_id_from_branch,
     is_work_branch, is_ancestor,
 )
@@ -354,6 +355,70 @@ def do_advance(series_id, use_json):
         sys.exit(1)
 
 
+def do_diff(series_id, use_json):
+    """Show range-diff between the last sent version and current HEAD."""
+    ssp = series_state_path()
+    s = get_series(ssp, series_id)
+    if not s:
+        msg = f"系列 '{series_id}' 不存在"
+        if use_json:
+            print(json.dumps({"error": msg}))
+        else:
+            print(msg, file=sys.stderr)
+        sys.exit(1)
+
+    # Find the tip (and optional base) of the last sent round
+    prev_tip = None
+    prev_base = None
+    for phase_key in ("upstream", "internal_review"):
+        rounds = s["phases"].get(phase_key, {}).get("rounds", [])
+        if rounds:
+            prev_tip = rounds[-1].get("tip")
+            prev_base = rounds[-1].get("base")
+            break
+
+    if not prev_tip:
+        msg = "没有上一版本的 tip 记录。"
+        if use_json:
+            print(json.dumps({"error": msg, "series_id": series_id}))
+        else:
+            print(msg, file=sys.stderr)
+        sys.exit(1)
+
+    # Switch to series branch if needed
+    branch = s.get("branch")
+    orig_branch = current_branch()
+    if branch and orig_branch != branch:
+        checkout(branch)
+
+    cur_tip = git_stdout("log", "-1", "--format=%H")
+
+    # Build range-diff args
+    # If prev round has a custom base (e.g. migrated from monolithic branch),
+    # use base..tip for the left side; otherwise use docs-next..tip
+    left_base = prev_base or "docs-next"
+    r = git("range-diff", f"{left_base}..{prev_tip}", f"docs-next..{cur_tip}")
+    range_diff = r.stdout
+
+    # Switch back
+    if branch and orig_branch != branch:
+        checkout(orig_branch)
+
+    if use_json:
+        print(json.dumps({
+            "series_id": series_id,
+            "prev_tip": prev_tip[:12],
+            "cur_tip": cur_tip[:12],
+            "range_diff": range_diff,
+        }, indent=2, ensure_ascii=False))
+    else:
+        print(f"v1..v2 range-diff:\n")
+        if range_diff.strip():
+            print(range_diff)
+        else:
+            print("无变化。")
+
+
 def do_current(use_json):
     """Show status of the series on the current branch."""
     sid = series_id_from_branch()
@@ -528,6 +593,16 @@ def main():
             print("错误: --advance 需要系列 ID", file=sys.stderr)
             sys.exit(1)
         do_advance(series_id, use_json)
+    elif "--diff" in args:
+        idx = args.index("--diff")
+        series_id = args[idx + 1] if idx + 1 < len(args) else None
+        if not series_id:
+            # Auto-detect from branch
+            series_id = series_id_from_branch()
+        if not series_id:
+            print("错误: --diff 需要系列 ID（或在 zh-work/* 分支上运行）", file=sys.stderr)
+            sys.exit(1)
+        do_diff(series_id, use_json)
     elif "--current" in args:
         do_current(use_json)
     elif "--dashboard" in args:

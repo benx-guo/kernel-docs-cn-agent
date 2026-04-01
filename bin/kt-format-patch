@@ -197,7 +197,10 @@ def main():
             print(f"  ✓ htmldocs: 无 zh_CN 相关问题")
 
         if all_ok:
-            print("\n全部通过。建议下一步: kt-send-patch --self")
+            if version and version > 1 and series_id:
+                print(f"\n全部通过。发送前可查看版本差异: kt-series --diff {series_id}")
+            else:
+                print("\n全部通过。建议下一步: kt-send-patch --self")
         else:
             print("\n有错误需要修复后重新生成。")
             sys.exit(1)

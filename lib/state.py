@@ -147,6 +147,7 @@ def add_round(
     path: str | Path,
     series_id: str,
     cover_message_id: str = "",
+    tip: str = "",
 ) -> int:
     """Append a new round to the current phase and return its version number."""
     p = Path(path)
@@ -165,12 +166,15 @@ def add_round(
             "action_items": [],
         }
 
-    phase_data["rounds"].append({
+    round_entry: dict = {
         "version": version,
         "sent_at": _today(),
         "cover_message_id": cover_message_id,
         "per_patch": per_patch,
-    })
+    }
+    if tip:
+        round_entry["tip"] = tip
+    phase_data["rounds"].append(round_entry)
     _save(p, data)
     return version
 

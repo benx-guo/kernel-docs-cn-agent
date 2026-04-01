@@ -223,8 +223,11 @@ def main():
 
     # Update series state only for review/submit sends (not --self test sends)
     if rc == 0 and not is_dry and series_id and mode in ("review", "submit"):
+        from lib.git_helpers import git_stdout
         mid = extract_message_id(stdout + stderr)
-        version = add_round(series_state_path(), series_id, cover_message_id=mid)
+        tip = git_stdout("log", "-1", "--format=%H")
+        version = add_round(series_state_path(), series_id,
+                            cover_message_id=mid, tip=tip)
         result["series_version"] = version
         result["message_id"] = mid
 
