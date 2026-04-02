@@ -79,6 +79,10 @@ def series_state_path() -> Path:
     return data_dir() / "series-state.json"
 
 
+def diff_cache_path() -> Path:
+    return data_dir() / "diff-cache.json"
+
+
 def zh_cn_dir() -> Path:
     """Return the zh_CN translation base directory inside the kernel tree."""
     return kernel_dir() / "Documentation" / "translations" / "zh_CN"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import re
 import subprocess
 from pathlib import Path
 
@@ -41,6 +42,11 @@ def current_branch(cwd: str | Path | None = None) -> str:
 
 def head_oneline(cwd: str | Path | None = None) -> str:
     return git_stdout("log", "--oneline", "-1", cwd=cwd)
+
+
+def docs_next_head() -> str:
+    """Return the commit hash of the local docs-next branch tip."""
+    return git_stdout("rev-parse", "docs-next")
 
 
 # ── Branch operations ─────────────────────────────────────────────
@@ -127,14 +133,22 @@ def user_email(cwd: str | Path | None = None) -> str:
 
 # ── Commit map for zh_CN files ──────────────────────────────────────
 
+_BASE_COMMIT_RE = re.compile(
+    r'(?:based on|through|to) commit ([0-9a-f]{7,40})', re.IGNORECASE)
+
+
 def build_zh_commit_map(cwd: str | Path | None = None) -> dict[str, tuple[str, str]]:
-    """Build a map: zh_CN file path -> (last_commit_hash, date).
+    """Build a map: zh_CN file path -> (english_base_commit, date).
+
+    Extracts the English base commit from the translation commit message
+    (e.g. "based on commit abc123" or "through commit abc123").
+    Falls back to the translation commit itself if no base commit is found.
 
     Single ``git log`` pass — much faster than per-file queries.
     Returns keys like ``Documentation/translations/zh_CN/admin-guide/README.rst``.
     """
     raw = git_stdout(
-        "log", "--format=%H %as", "--name-only",
+        "log", "--format=%H %as%n%B%n==END==", "--name-only",
         "--diff-filter=ACMR",
         "--", "Documentation/translations/zh_CN/",
         cwd=cwd,
@@ -142,27 +156,66 @@ def build_zh_commit_map(cwd: str | Path | None = None) -> dict[str, tuple[str, s
     file_map: dict[str, tuple[str, str]] = {}
     current_commit: str | None = None
     current_date: str | None = None
+    current_base: str | None = None
 
     for line in raw.splitlines():
-        line = line.strip()
-        if not line:
+        stripped = line.strip()
+        if not stripped:
             continue
-        parts = line.split(" ", 1)
+        if stripped == "==END==":
+            continue
+        parts = stripped.split(" ", 1)
         if len(parts) == 2 and len(parts[0]) == 40:
             current_commit = parts[0]
             current_date = parts[1]
-        elif current_commit and current_date and line.startswith("Documentation/translations/zh_CN/"):
-            if line not in file_map:
-                file_map[line] = (current_commit, current_date)
+            current_base = None
+            continue
+        # Try to extract base commit from message body
+        if current_commit and current_base is None:
+            m = _BASE_COMMIT_RE.search(stripped)
+            if m:
+                current_base = m.group(1)
+        # File path line
+        if current_commit and current_date and stripped.startswith("Documentation/translations/zh_CN/"):
+            base = current_base or current_commit
+            existing = file_map.get(stripped)
+            # Prefer entries with an explicit base commit over fallbacks
+            if existing is None or (not existing[2] and current_base):
+                file_map[stripped] = (base, current_date, bool(current_base))
 
-    return file_map
+    # Strip internal flag, return (base_commit, date) only
+    return {k: (v[0], v[1]) for k, v in file_map.items()}
+
+
+def latest_commit_batch(
+    paths: list[str],
+    cwd: str | Path | None = None,
+    max_workers: int = 16,
+    on_done: callable = None,
+) -> list[str]:
+    """Parallel: get latest commit hash for each path."""
+    total = len(paths)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {}
+        for idx, path in enumerate(paths):
+            f = pool.submit(last_commit_for_file, path, no_merges=True, cwd=cwd)
+            futures[f] = (idx, path)
+        results = [""] * total
+        done = 0
+        for f in concurrent.futures.as_completed(futures):
+            idx, path = futures[f]
+            results[idx] = f.result()
+            done += 1
+            if on_done:
+                on_done(done, total, path)
+        return results
 
 
 def english_commits_since(en_rel: str, since_commit: str,
                           cwd: str | Path | None = None) -> int:
-    """Count English doc commits since *since_commit*."""
+    """Count non-merge English doc commits since *since_commit*."""
     count_str = git_stdout(
-        "rev-list", "--count", f"{since_commit}..HEAD", "--", en_rel,
+        "rev-list", "--count", "--no-merges", f"{since_commit}..HEAD", "--", en_rel,
         cwd=cwd,
     )
     try:
@@ -175,13 +228,27 @@ def english_commits_since_batch(
     items: list[tuple[str, str]],
     cwd: str | Path | None = None,
     max_workers: int = 16,
+    on_done: callable = None,
 ) -> list[int]:
-    """Parallel version: count commits for [(en_rel, since_commit), ...]."""
-    def _check(args: tuple[str, str]) -> int:
-        return english_commits_since(args[0], args[1], cwd=cwd)
+    """Parallel version: count commits for [(en_rel, since_commit), ...].
 
+    *on_done(done, total, en_rel)* is called after each item completes.
+    """
+    total = len(items)
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-        return list(pool.map(_check, items))
+        futures = {}
+        for idx, (en_rel, since) in enumerate(items):
+            f = pool.submit(english_commits_since, en_rel, since, cwd=cwd)
+            futures[f] = (idx, en_rel)
+        results = [0] * total
+        done = 0
+        for f in concurrent.futures.as_completed(futures):
+            idx, en_rel = futures[f]
+            results[idx] = f.result()
+            done += 1
+            if on_done:
+                on_done(done, total, en_rel)
+        return results
 
 
 # ── Working tree helpers ────────────────────────────────────────────
@@ -223,9 +290,14 @@ def diff_between(base: str, tip: str = "HEAD", path: str | None = None,
 
 
 def last_commit_for_file(filepath: str, fmt: str = "%H",
+                         no_merges: bool = False,
                          cwd: str | Path | None = None) -> str:
     """Return the last commit touching *filepath*."""
-    return git_stdout("log", "-1", f"--format={fmt}", "--", filepath, cwd=cwd)
+    args = ["log", "-1", f"--format={fmt}"]
+    if no_merges:
+        args.append("--no-merges")
+    args += ["--", filepath]
+    return git_stdout(*args, cwd=cwd)
 
 
 def is_ancestor(commit: str, branch: str = "docs-next",
@@ -233,6 +305,26 @@ def is_ancestor(commit: str, branch: str = "docs-next",
     """Check if *commit* is an ancestor of *branch*."""
     r = git("merge-base", "--is-ancestor", commit, branch, cwd=cwd)
     return r.returncode == 0
+
+
+# ── Rebase ─────────────────────────────────────────────────────────
+
+def needs_rebase(base: str = "docs-next",
+                 cwd: str | Path | None = None) -> bool:
+    """Check if current branch needs rebasing onto *base*."""
+    merge_base = git_stdout("merge-base", "HEAD", base, cwd=cwd)
+    base_tip = git_stdout("rev-parse", base, cwd=cwd)
+    return merge_base != base_tip
+
+
+def rebase_onto(base: str = "docs-next",
+                cwd: str | Path | None = None) -> None:
+    """Rebase current branch onto *base*. Raises on failure."""
+    r = git("rebase", base, cwd=cwd)
+    if r.returncode != 0:
+        git("rebase", "--abort", cwd=cwd)
+        raise RuntimeError(
+            f"rebase onto {base} 失败，已 abort。\n{r.stderr.strip()}")
 
 
 # ── Format-patch ────────────────────────────────────────────────────
