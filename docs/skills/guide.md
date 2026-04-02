@@ -369,10 +369,23 @@ admin-guide/、process/、rust/、core-api/ 等。
 每个翻译文件对应一个英文原文，路径结构保持一致。
 ```
 
+### 创建 Series
+
+文件确认后，立即创建 series（后续翻译、质检、提交都在 series 分支上进行）：
+
+```
+使用 Agent 工具执行 /series 技能创建新系列。
+subagent_type: "general-purpose"
+prompt: "执行 /series --create 技能。汇报创建的 series ID 和工作分支。"
+```
+
+将 series_id 保存到 guide-state 的 `context.series_id`。
+
 ### 过渡
 
 ```
-✓ 目标文件已选定！下一步开始翻译。
+✓ 目标文件已选定！Series 已创建，工作分支：`zh-work/<id>`。
+下一步开始翻译。
 
 → 继续 / 暂停（下次 /guide 恢复）
 ```
@@ -385,7 +398,7 @@ admin-guide/、process/、rust/、core-api/ 等。
 
 ### 操作
 
-用 Agent 委托执行 `/translate`：
+确保已在 series 分支 `zh-work/<context.series_id>` 上。用 Agent 委托执行 `/translate`：
 
 ```
 使用 Agent 工具，对 <context.chosen_files> 中的每个文件执行 /translate 技能。
@@ -552,21 +565,10 @@ prompt: "对以下文件逐个执行 /check --fix 修复可自动修复的问题
 
 ### 操作
 
-分两步执行：
+此时已在 series 分支上（Step 2 创建）。
 
-**步骤 1：创建 series 并提交**
-
-```
-使用 Agent 工具执行 /series 技能创建新系列。
-subagent_type: "general-purpose"
-prompt: "执行 /series --create 技能。这是一个引导流程中的新 series。汇报创建的 series ID 和工作分支。"
-```
-
-将 series_id 保存到 guide-state 的 `context.series_id`。
-
-提交翻译文件（用 AI 构建 commit message，参见 `docs/commit-format.md`）。
-
-**步骤 2：生成补丁**
+1. 提交翻译文件（用 AI 构建 commit message，参见 `docs/commit-format.md`）
+2. 生成补丁：
 
 ```
 使用 Agent 工具执行 /format-patch 技能。

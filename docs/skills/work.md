@@ -147,7 +147,15 @@ cd <ROOT> && python3 bin/kt-sync
 
 ## 阶段 2 — TL（执行翻译）
 
-设置 stage 2。**AI 核心工作**，按 `docs/translation-rules.md` 规范翻译。
+设置 stage 2。
+
+如果还没有 series，先创建（自动建 `zh-work/<id>` 分支并切过去）：
+```bash
+cd <ROOT> && python3 bin/kt-series --create --json
+```
+确保已在 series 分支上，再开始翻译。
+
+**AI 核心工作**，按 `docs/translation-rules.md` 规范翻译。
 
 - **更新翻译**时，先获取详细变更：
   ```bash
@@ -174,23 +182,18 @@ cd <ROOT> && python3 bin/kt-check --file linux/Documentation/translations/zh_CN/
 
 ## 阶段 4 — PAT（提交 + 补丁）
 
-设置 stage 4。
+设置 stage 4。此时已在 series 分支上（阶段 2 创建）。
 
-1. 如果还没有 series，先创建（自动建 `zh-work/<id>` 分支并切过去）：
-   ```bash
-   cd <ROOT> && python3 bin/kt-series --create --json
-   ```
-2. 确保已在 series 分支上
-3. 获取英文原文当前 commit 信息
-4. 构建 4 行 commit message（参见 `docs/commit-format.md`）
-5. 用户确认后 commit
-6. 生成补丁（自动按 series 分支隔离）：
+1. 获取英文原文当前 commit 信息
+2. 构建 4 行 commit message（参见 `docs/commit-format.md`）
+3. 用户确认后 commit
+4. 生成补丁（自动按 series 分支隔离）：
    ```bash
    cd <ROOT> && python3 bin/kt-format-patch --series <id> --json
    ```
-7. **必须**验证 checkpatch + htmldocs（bin/kt-format-patch 自动完成）
+5. **必须**验证 checkpatch + htmldocs（bin/kt-format-patch 自动完成）
 
-提议：_"补丁已生成，系列已创建。建议先发给自己测试。"_
+提议：_"补丁已生成。建议先发给自己测试。"_
 
 ## 阶段 5 — E1（发给自己测试）
 
