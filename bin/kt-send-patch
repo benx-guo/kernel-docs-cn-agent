@@ -269,57 +269,52 @@ def main():
         "in_reply_to": in_reply_to,
     }
 
-    # --submit: never send automatically; output the command for user to run manually
+    # Build git send-email command (used in all preview modes)
+    cmd_parts = ["git", "send-email"]
+    for addr in to_list:
+        cmd_parts.append(f"--to='{addr}'")
+    for addr in cc_list:
+        cmd_parts.append(f"--cc='{addr}'")
+    cmd_parts.append("--confirm=never")
+    if in_reply_to:
+        mid = in_reply_to.strip("<>")
+        cmd_parts.append(f"--in-reply-to='<{mid}>'")
+    cmd_parts.extend(str(p) for p in patches)
+    send_cmd = " \\\n    ".join(cmd_parts)
+    result["command"] = " ".join(cmd_parts)
+
+    # Preview gate: show command and exit unless --confirm (or --submit manual mode)
+    needs_preview = False
     if mode == "submit":
-        cmd_parts = ["git", "send-email"]
-        for addr in to_list:
-            cmd_parts.append(f"--to='{addr}'")
-        for addr in cc_list:
-            cmd_parts.append(f"--cc='{addr}'")
-        cmd_parts.append("--confirm=never")
-        if in_reply_to:
-            mid = in_reply_to.strip("<>")
-            cmd_parts.append(f"--in-reply-to='<{mid}>'")
-        cmd_parts.extend(str(p) for p in patches)
-        send_cmd = " \\\n    ".join(cmd_parts)
-
+        needs_preview = True
         result["action_required"] = "manual_submit"
-        result["command"] = " ".join(cmd_parts)
+    elif not confirmed and not dry_run:
+        needs_preview = True
+        result["action_required"] = f"confirm_{mode}"
 
+    if needs_preview:
+        headers = {
+            "self": "发送预览（发给自己）",
+            "review": "发送预览（内部审阅者）",
+            "submit": "上游提交（需手动发送）",
+        }
         if use_json:
             print(json.dumps(result, indent=2, ensure_ascii=False))
         else:
-            print("=== 上游提交（需手动发送）===")
+            print(f"=== {headers[mode]} ===")
             print(f"  To:  {', '.join(to_list)}")
             if cc_list:
                 print(f"  Cc:  {', '.join(cc_list)}")
-            print(f"  补丁: {len(patches)} 个")
             if in_reply_to:
                 print(f"  In-Reply-To: {in_reply_to}")
             if series_id:
                 print(f"  系列: {series_id}")
-            print(f"\n请在内核目录下手动执行以下命令:\n")
-            print(f"cd {kernel_dir()}")
-            print(send_cmd)
-        sys.exit(0)
-
-    # --review requires --confirm to actually send
-    if mode == "review" and not confirmed and not dry_run:
-        result["action_required"] = "confirm_review"
-
-        if use_json:
-            print(json.dumps(result, indent=2, ensure_ascii=False))
-        else:
-            print("=== 发送预览（内部审阅者）===")
-            print(f"  To:  {', '.join(to_list)}")
-            if cc_list:
-                print(f"  Cc:  {', '.join(cc_list)}")
-            print(f"  补丁: {len(patches)} 个")
-            if in_reply_to:
-                print(f"  In-Reply-To: {in_reply_to}")
-            if series_id:
-                print(f"  系列: {series_id}")
-            print(f"\n确认发送请加 --confirm 参数重新运行。")
+            print(f"\n  cd {kernel_dir()}")
+            print(f"  {send_cmd}")
+            if mode == "submit":
+                print(f"\n请在内核目录下手动执行以上命令。")
+            else:
+                print(f"\n确认发送请加 --confirm 参数重新运行。")
         sys.exit(0)
 
     # Execute send (--self and --review --confirm only)

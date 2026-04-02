@@ -653,11 +653,13 @@ cd <ROOT> && ls outgoing/<series_id>/v1/*.patch 2>/dev/null
 
 如果需要配置，引导查看 `config/email.conf.example` 并设置。将 `context.email_configured` 设为 true。
 
+先生成发送命令：
+
+```bash
+cd <ROOT> && python3 bin/kt-send-patch --self --series <context.series_id>
 ```
-使用 Agent 工具执行 /send-patch 技能。
-subagent_type: "general-purpose"
-prompt: "执行 /send-patch --self 技能。汇报发送结果。"
-```
+
+从输出中提取 `git send-email` 命令，在对话中用代码块展示给用户（含收件人、补丁文件），用户确认后加 `--confirm` 执行。
 
 ### 结果展示
 
@@ -716,7 +718,7 @@ prompt: "执行 /send-patch --self 技能。汇报发送结果。"
 cd <ROOT> && python3 bin/kt-send-patch --review <email> --series <context.series_id>
 ```
 
-将输出的 `git send-email` 命令原样展示给用户（含 To、补丁列表），用户确认后再执行。
+从输出中提取 `git send-email` 命令，在对话中用代码块展示给用户（含收件人、补丁文件），用户确认后再执行。
 
 ### 内审循环
 
@@ -849,7 +851,7 @@ prompt: "执行 /series --show <context.series_id> 技能。汇报当前 series 
 cd <ROOT> && python3 bin/kt-send-patch --submit --series <context.series_id>
 ```
 
-将输出的 `git send-email` 命令**原样展示**给用户，包括 To、Cc、补丁列表，例如：
+从输出中提取 `git send-email` 命令，在对话中用代码块展示给用户（含 To、Cc、补丁文件），例如：
 
 ```
 即将执行以下命令：

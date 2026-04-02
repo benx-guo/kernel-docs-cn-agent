@@ -200,7 +200,13 @@ cd <ROOT> && python3 bin/kt-check --file linux/Documentation/translations/zh_CN/
 设置 stage 5。
 
 ```bash
-cd <ROOT> && python3 bin/kt-send-patch --self --json
+cd <ROOT> && python3 bin/kt-send-patch --self --series <id>
+```
+
+从输出中提取 `git send-email` 命令，在对话中用代码块展示给用户（含收件人、补丁文件），用户确认后加 `--confirm` 执行：
+
+```bash
+cd <ROOT> && python3 bin/kt-send-patch --self --series <id> --confirm
 ```
 
 提示检查邮箱确认格式。
@@ -215,7 +221,7 @@ cd <ROOT> && python3 bin/kt-send-patch --self --json
 cd <ROOT> && python3 bin/kt-send-patch --review <email> --series <id>
 ```
 
-将输出的 `git send-email` 命令原样展示给用户，用户确认后加 `--confirm` 执行：
+从输出中提取 `git send-email` 命令，在对话中用代码块展示给用户（含收件人、补丁文件），用户确认后加 `--confirm` 执行：
 
 ```bash
 cd <ROOT> && python3 bin/kt-send-patch --review <email> --series <id> --confirm
@@ -270,7 +276,7 @@ cd <ROOT> && python3 bin/kt-mail --thread "<cover_message_id>" --local --json
 cd <ROOT> && python3 bin/kt-send-patch --submit --series <id>
 ```
 
-将输出的 `git send-email` 命令原样展示给用户（含 To、Cc、补丁列表），用户确认后再执行该命令。确认后推进到阶段 10。
+从输出中提取 `git send-email` 命令，在对话中用代码块展示给用户（含 To、Cc、补丁文件），用户确认后再执行该命令。确认后推进到阶段 10。
 
 ---
 
