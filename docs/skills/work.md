@@ -5,7 +5,22 @@
 工作流模型参见 `docs/workflow.md`。翻译规范参见 `docs/translation-rules.md`。
 
 > **路径约定**：`<ROOT>` 为项目根目录。
-> 如果 `<ROOT>/linux/`、`<ROOT>/config/glossary.txt`、`<ROOT>/data/workflow-state.json` 不存在，提示用户先运行 setup。
+
+### 前置条件（自动处理）
+
+启动时自动检测并处理环境：
+
+1. 如果 `<ROOT>/linux/` 不存在，用 Agent 委托执行 `/setup`：
+   ```
+   使用 Agent 工具执行 /setup 技能。
+   subagent_type: "general-purpose"
+   prompt: "执行 /setup 技能。完成后汇报结果。"
+   ```
+2. 如果 `<ROOT>/linux/` 已存在，运行 `kt-sync` 同步到最新：
+   ```bash
+   cd <ROOT> && python3 bin/kt-sync
+   ```
+3. 确认 `<ROOT>/config/glossary.txt` 存在（/setup 会创建）。
 
 ```
 1(CHK) → 2(TL) → 3(QA) → 4(PAT) → 5(E1) → 6(E2)
@@ -28,11 +43,64 @@
 | 输入 | 行为 |
 |------|------|
 | `<file-path>` | 对指定文件走流水线 |
-| 空（无参数） | 自动选文件 |
+| 空（无参数） | 列出待翻译文件供用户选择（见下方流程） |
 | `--batch N` | 选 N 个文件排队处理 |
 | `--batch N --dir <subdir>` | 从指定子目录选 N 个文件 |
 
 文件路径相对于 `Documentation/`。
+
+### 无参数时的文件选择流程
+
+禁止自动选择。必须让用户从列表中挑选。
+
+**Step 1：同步**
+
+```bash
+cd <ROOT> && python3 bin/kt-sync --json
+```
+
+自动 fetch + pull docs-next，命中缓存则秒回，否则重算并写缓存。
+
+**Step 2：选择文件类型**
+
+向用户展示两类文件供选择：
+- **待更新翻译**（N 个）— 已有翻译但英文原文已变更
+- **未翻译文件**（N 个）— 从未被翻译的文件
+
+**Step 3：选择浏览方式**
+
+根据文件类型提供不同的浏览入口：
+
+待更新翻译：
+1. **按排名** — 按落后 commits 排序，分页翻看
+2. **按目录** — 先选目录再选文件
+3. **搜索** — 输入关键词模糊匹配
+
+未翻译文件：
+1. **按目录** — 先选目录再选文件
+2. **搜索** — 输入关键词模糊匹配
+
+每种方式对应 `kt-diff` 的不同参数：
+- 按排名：`kt-diff --type outdated|missing --page N`
+- 按目录：`kt-diff --dirs [DIR] --type outdated|missing --page N`
+- 搜索：`kt-diff --search KEYWORD --type outdated|missing`
+
+**Step 4：分页浏览与选择**
+
+交互控制：
+- 编号选中文件（支持多选：`1,3,5` 或 `1-5`）
+- `-编号` 取消选中（如 `-3`）
+- `n` 下一页 / `p` 上一页
+- `b` 返回上级
+- `s` 切换到搜索
+- `done` 确认选择
+
+选中状态跨页保持，用 `✓` 标记已选文件、`·` 标记未选文件。
+顶部始终显示当前已选文件数量和列表。
+
+**Step 5：确认**
+
+用户输入 `done` 后，展示已选文件列表（含行数），请求确认后进入流水线。
 
 ---
 
@@ -46,12 +114,6 @@ cd <ROOT> && python3 bin/kt-work --stage <file> --json
 **写状态**：
 ```bash
 cd <ROOT> && python3 bin/kt-work --set <file> <N>
-```
-
-## 自动选文件
-
-```bash
-cd <ROOT> && python3 bin/kt-work --next [--dir <subdir>] --json
 ```
 
 ---
@@ -68,9 +130,18 @@ cd <ROOT> && python3 bin/kt-work --next [--dir <subdir>] --json
 
 ## 阶段 1 — CHK（检查是否需要翻译）
 
-设置 stage 1。用 `bin/kt-diff --detail <file> --json` 获取状态。
+**前置条件**：需要最新代码。先运行：
+```bash
+cd <ROOT> && python3 bin/kt-sync
+```
 
-汇报：新翻译 / 更新 / 已最新 + 变更摘要。
+设置 stage 1。从 `kt-sync` 或 `kt-diff --json` 的缓存结果中查找该文件的状态（`commits_behind`）：
+
+- 文件不在中文目录 → 新翻译
+- `commits_behind > 0` → 需要更新
+- `commits_behind == 0` → 已最新
+
+汇报：新翻译 / 更新 / 已最新。
 
 提议：_"此文件需要 [新翻译/更新]，是否继续？"_
 
@@ -78,9 +149,14 @@ cd <ROOT> && python3 bin/kt-work --next [--dir <subdir>] --json
 
 设置 stage 2。**AI 核心工作**，按 `docs/translation-rules.md` 规范翻译。
 
+- **更新翻译**时，先获取详细变更：
+  ```bash
+  cd <ROOT> && python3 bin/kt-diff --detail <file> --json
+  ```
+  用返回的 commit 列表和 diff 内容确定英文改了什么，只改对应部分。
 - 读取英文原文 + 已有中文翻译 + `config/glossary.txt`
 - **新翻译**：逐段翻译 + 加文件头 + 检查 index.rst toctree
-- **更新翻译**：对照 git diff 只改变更部分
+- **更新翻译**：对照 diff 只改变更部分
 
 提议：_"翻译完成。请审阅后确认继续质检。"_
 
@@ -133,7 +209,13 @@ cd <ROOT> && python3 bin/kt-send-patch --self --json
 询问审阅者邮箱（或跳过内审直接到阶段 9）。
 
 ```bash
-cd <ROOT> && python3 bin/kt-send-patch --review <email> --series <id> --json
+cd <ROOT> && python3 bin/kt-send-patch --review <email> --series <id>
+```
+
+将输出的 `git send-email` 命令原样展示给用户，用户确认后加 `--confirm` 执行：
+
+```bash
+cd <ROOT> && python3 bin/kt-send-patch --review <email> --series <id> --confirm
 ```
 
 ---
@@ -171,19 +253,21 @@ cd <ROOT> && python3 bin/kt-mail --thread "<cover_message_id>" --local --json
 
 ## 阶段 9 — E3（正式提交到邮件列表）
 
-设置 stage 9。
+设置 stage 9。（`kt-format-patch` 会自动 sync + rebase，无需手动运行 `kt-sync`。）
 
 如果从内审推进，调用 advance 逻辑（收集 Reviewed-by，soft reset，重新 commit，重新 format-patch）：
 
-向用户确认后：
+自动完成准备工作：
 - 收集 Reviewed-by 并重新 commit
 - 重新 format-patch（上游 v1）
-- dry-run 预览
-- 用户确认后正式发送
+
+然后运行 `kt-send-patch --submit` 生成 `git send-email` 命令：
 
 ```bash
-cd <ROOT> && python3 bin/kt-send-patch --submit --series <id> --json
+cd <ROOT> && python3 bin/kt-send-patch --submit --series <id>
 ```
+
+将输出的 `git send-email` 命令原样展示给用户（含 To、Cc、补丁列表），用户确认后再执行该命令。确认后推进到阶段 10。
 
 ---
 
@@ -195,7 +279,7 @@ cd <ROOT> && python3 bin/kt-send-patch --submit --series <id> --json
 
 ### 阶段 11 — RV2（邮件列表修订）
 
-设置 stage 11。同阶段 8 逻辑，但：
+设置 stage 11。（`kt-format-patch` 会自动 sync + rebase，无需手动运行 `kt-sync`。）同阶段 8 逻辑，但：
 - 起草英文回复邮件
 - 重新 format-patch 带版本号
 - 带 `--in-reply-to` 串联到原始线程
