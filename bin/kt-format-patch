@@ -20,6 +20,7 @@ from lib.project import root, kernel_dir, outgoing_dir, series_state_path
 from lib.git_helpers import (
     git_lines, git_stdout, format_patch, current_branch, checkout,
     series_id_from_branch, is_work_branch, ensure_clean_worktree,
+    needs_rebase, rebase_onto,
 )
 from lib.patch import run_checkpatch, run_get_maintainer, run_htmldocs
 from lib.state import load_series_state, save_series_state
@@ -65,6 +66,16 @@ def main():
     if series_branch and current_branch() != series_branch:
         ensure_clean_worktree()
         checkout(series_branch)
+
+    # Sync docs-next to latest, then rebase if needed
+    kd = kernel_dir()
+    git_stdout("fetch", "origin", "docs-next:docs-next", cwd=kd)
+
+    rebased = False
+    if needs_rebase("docs-next"):
+        ensure_clean_worktree()
+        rebase_onto("docs-next")
+        rebased = True
 
     # Check for commits
     commits = git_lines("log", "--oneline", "docs-next..HEAD")
@@ -112,7 +123,6 @@ def main():
         patch_info.append({"file": p.name, "subject": subject})
 
     # Get maintainers
-    kd = kernel_dir()
     recipients = set()
     for p_path in patches:
         p = Path(p_path)
@@ -177,6 +187,7 @@ def main():
         "cover_letter": cover_letter,
         "version": version,
         "series_id": series_id,
+        "rebased": rebased,
         "recipients": sorted(recipients),
         "checkpatch": checkpatch_results,
         "htmldocs": {
@@ -188,6 +199,8 @@ def main():
     if use_json:
         print(json.dumps(output, indent=2, ensure_ascii=False))
     else:
+        if rebased:
+            print("✓ 已 rebase 到最新 docs-next\n")
         print(f"生成 {len(patch_info)} 个补丁:")
         for pi in patch_info:
             print(f"  {pi['file']}: {pi['subject']}")

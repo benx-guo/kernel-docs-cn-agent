@@ -24,6 +24,7 @@ from lib.project import (
 )
 from lib.state import load_workflow_state, load_series_state
 from lib.git_helpers import list_work_branches
+from lib.diff import get_status_cached
 
 
 def check_deps():
@@ -197,6 +198,12 @@ def main():
     ensure_directories()
     repo_action = clone_or_update()
     branch_action = setup_work_branch()
+    # Warm diff cache
+    try:
+        get_status_cached()
+    except Exception:
+        pass  # Non-critical; cache will be built on first kt-diff run
+
     status = get_status()
 
     if use_json:
