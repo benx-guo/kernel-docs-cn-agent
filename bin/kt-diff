@@ -3,147 +3,174 @@
 
 Usage:
     kt-diff [--status] [--dir DIR] [--detail FILE] [--json]
+            [--page N] [--per-page N] [--type outdated|missing]
+            [--dirs [DIR]] [--search KEYWORD] [--sort behind|size]
 
 Options:
-    --status         Global overview, top 10 outdated files
+    --status         Global overview (default)
     --dir DIR        Limit to a subdirectory
     --detail FILE    Show detailed diff for a specific file
     --json           Output JSON
+    --page N         Page number (default: 1)
+    --per-page N     Items per page (default: 10)
+    --type TYPE      Filter: outdated or missing (default: outdated)
+    --dirs [DIR]     Show directory tree with file counts; optionally drill into DIR
+    --search KEYWORD Fuzzy search file paths by keyword
+    --sort ORDER     Sort: behind (default for outdated), size (line count, small first)
 """
 
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from lib.project import kernel_dir, en_doc_dir, zh_cn_dir
-from lib.git_helpers import (
-    build_zh_commit_map, english_commits_since_batch,
-    last_commit_for_file, commits_between, diff_between,
-    is_ancestor, head_oneline,
-)
+from lib.diff import get_status_cached, get_detail
+from lib.project import en_doc_dir
 
 
-def get_status(subdir=None):
-    """Compute translation status for all files (or a subdirectory)."""
-    kd = kernel_dir()
-    en_base = en_doc_dir()
-    zh_base = zh_cn_dir()
-
-    # Count English files
-    en_files = []
-    for rst in sorted(en_base.rglob("*.rst")):
-        rel = rst.relative_to(en_base)
-        if str(rel).startswith("translations/"):
-            continue
-        if subdir and not str(rel).startswith(subdir.rstrip("/") + "/"):
-            continue
-        en_files.append(str(rel))
-
-    # Count and map Chinese files
-    zh_file_set = set()
-    file_map = build_zh_commit_map()
-
-    candidates = []
-    up_to_date = []
-
-    if zh_base.is_dir():
-        for zh_file in sorted(zh_base.rglob("*.rst")):
-            rel = zh_file.relative_to(zh_base)
-            rel_str = str(rel)
-            if subdir and not rel_str.startswith(subdir.rstrip("/") + "/"):
-                continue
-            zh_file_set.add(rel_str)
-
-            en_file = en_base / rel
-            zh_rel = str(zh_file.relative_to(kd))
-            entry = file_map.get(zh_rel)
-
-            if not en_file.exists() or not entry:
-                up_to_date.append({"file": rel_str, "zh_date": entry[1] if entry else None})
-                continue
-
-            zh_commit, zh_date = entry
-            en_rel = str(en_file.relative_to(kd))
-            candidates.append((rel_str, en_rel, zh_commit, zh_date))
-
-    # Batch check commits
-    work_items = [(en_rel, zh_commit) for _, en_rel, zh_commit, _ in candidates]
-    counts = english_commits_since_batch(work_items) if work_items else []
-
-    results = []
-    for (rel_str, _, zh_commit, zh_date), count in zip(candidates, counts):
-        merged = is_ancestor(zh_commit[:12], "docs-next")
-        results.append({
-            "file": rel_str,
-            "status": "outdated" if count > 0 else "up_to_date",
-            "commits_behind": count,
-            "zh_last_updated": zh_date,
-            "zh_commit": zh_commit[:12],
-            "merged": merged,
-        })
-
-    for item in up_to_date:
-        results.append({
-            "file": item["file"],
-            "status": "up_to_date",
-            "commits_behind": 0,
-            "zh_last_updated": item["zh_date"],
-            "zh_commit": None,
-            "merged": True,
-        })
-
-    # Missing files
-    missing = [f for f in en_files if f not in zh_file_set]
-
-    return {
-        "head": head_oneline(),
-        "total_english": len(en_files),
-        "total_zh": len(zh_file_set),
-        "coverage": round(len(zh_file_set) / len(en_files) * 100, 1) if en_files else 0,
-        "files": sorted(results, key=lambda x: -(x["commits_behind"] or 0)),
-        "missing": missing,
-    }
+def _line_count(rel_path):
+    """Count lines of an English doc file. Returns 0 on error."""
+    try:
+        return sum(1 for _ in open(en_doc_dir() / rel_path, "rb"))
+    except OSError:
+        return 0
 
 
-def get_detail(file_path):
-    """Get detailed diff info for a single file."""
-    kd = kernel_dir()
-    en_rel = f"Documentation/{file_path}"
-    zh_rel = f"Documentation/translations/zh_CN/{file_path}"
+def _get_arg(args, flag, default=None):
+    if flag in args:
+        idx = args.index(flag)
+        if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
+            return args[idx + 1]
+    return default
 
-    zh_full = kd / zh_rel
-    en_full = kd / en_rel
 
-    if not en_full.is_file():
-        return {"error": f"英文文件不存在: {en_rel}"}
+def _get_flag_with_optional_arg(args, flag):
+    """Return (present, arg). arg is None if flag has no argument."""
+    if flag not in args:
+        return False, None
+    idx = args.index(flag)
+    if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
+        return True, args[idx + 1]
+    return True, None
 
-    if not zh_full.is_file():
-        return {"error": f"此文件尚未翻译", "file": file_path, "translated": False}
 
-    zh_commit = last_commit_for_file(zh_rel, fmt="%H")
-    zh_date = last_commit_for_file(zh_rel, fmt="%as")
-    zh_subject = last_commit_for_file(zh_rel, fmt="%s")
+def _dirs_mode(result, file_type, parent_dir, page, per_page, use_json):
+    """Show directory tree with file counts, paginated."""
+    if file_type == "missing":
+        paths = result.get("missing", [])
+    else:
+        paths = [f["file"] for f in result["files"] if f["status"] == "outdated"]
 
-    if not zh_commit:
-        return {"file": file_path, "translated": True, "zh_commit": None,
-                "changes": [], "diff": ""}
+    # Filter to parent_dir if given
+    if parent_dir:
+        prefix = parent_dir.rstrip("/") + "/"
+        paths = [p for p in paths if p.startswith(prefix)]
 
-    changes = commits_between(zh_commit, "HEAD", path=en_rel)
-    diff = diff_between(zh_commit, "HEAD", path=en_rel) if changes else ""
-    merged = is_ancestor(zh_commit[:12], "docs-next")
+    # Group by next directory level
+    dirs = Counter()
+    files_here = []
+    for p in paths:
+        if parent_dir:
+            rel = p[len(parent_dir.rstrip("/")) + 1:]
+        else:
+            rel = p
+        parts = rel.split("/")
+        if len(parts) == 1:
+            files_here.append(p)
+        else:
+            dirs[parts[0]] += 1
 
-    return {
-        "file": file_path,
-        "translated": True,
-        "zh_commit": zh_commit[:12],
-        "zh_date": zh_date,
-        "zh_subject": zh_subject,
-        "merged": merged,
-        "changes_count": len(changes),
-        "changes": changes,
-        "diff": diff,
-    }
+    # Build combined list: directories first (sorted by count desc), then files
+    sorted_dirs = sorted(dirs.items(), key=lambda x: -x[1])
+    all_entries = []
+    for d, c in sorted_dirs:
+        full = f"{parent_dir.rstrip('/')}/{d}" if parent_dir else d
+        all_entries.append({"dir": full, "name": d, "count": c})
+    outdated_map = {}
+    if file_type != "missing":
+        outdated_map = {f["file"]: f for f in result["files"] if f["status"] == "outdated"}
+    for f in files_here:
+        entry = {"file": f}
+        if f in outdated_map:
+            entry["commits_behind"] = outdated_map[f]["commits_behind"]
+        all_entries.append(entry)
+
+    total = len(all_entries)
+    total_pages = (total + per_page - 1) // per_page if total else 1
+    start = (page - 1) * per_page
+    page_items = all_entries[start:start + per_page]
+
+    if use_json:
+        print(json.dumps({
+            "type": file_type,
+            "parent": parent_dir or "",
+            "entries": page_items,
+            "pagination": {
+                "page": page,
+                "per_page": per_page,
+                "total": total,
+                "total_pages": total_pages,
+            },
+        }, indent=2, ensure_ascii=False))
+    else:
+        label = "未翻译" if file_type == "missing" else "待更新"
+        location = parent_dir or "."
+        print(f"{label}文件 — 目录: {location}  (第 {page}/{total_pages} 页, 共 {total} 项)\n")
+        for i, entry in enumerate(page_items, start=start + 1):
+            if "dir" in entry:
+                print(f"  {i:3d}. {entry['name']}/  ({entry['count']} 个)")
+            elif entry.get("commits_behind") is not None:
+                print(f"  {i:3d}. {entry['file']}  ({entry['commits_behind']} behind)")
+            else:
+                print(f"  {i:3d}. {entry['file']}")
+        if not page_items:
+            print("  （无文件）")
+        if total_pages > 1:
+            dirs_flag = f"--dirs {parent_dir}" if parent_dir else "--dirs"
+            nav = []
+            if page > 1:
+                nav.append(f"上一页: kt-diff {dirs_flag} --type {file_type} --page {page - 1}")
+            if page < total_pages:
+                nav.append(f"下一页: kt-diff {dirs_flag} --type {file_type} --page {page + 1}")
+            print(f"\n  → {'  |  '.join(nav)}")
+
+
+def _search_mode(result, file_type, keyword, use_json):
+    """Fuzzy search file paths by keyword."""
+    keyword_lower = keyword.lower()
+    parts = keyword_lower.split()
+
+    if file_type == "missing":
+        candidates = [{"file": f, "commits_behind": None} for f in result.get("missing", [])]
+    else:
+        candidates = [f for f in result["files"] if f["status"] == "outdated"]
+
+    # Match: all parts must appear in the file path (order-independent)
+    matches = []
+    for item in candidates:
+        path_lower = item["file"].lower()
+        if all(p in path_lower for p in parts):
+            matches.append(item)
+
+    if use_json:
+        print(json.dumps({
+            "type": file_type,
+            "keyword": keyword,
+            "total": len(matches),
+            "matches": matches,
+        }, indent=2, ensure_ascii=False))
+    else:
+        label = "未翻译" if file_type == "missing" else "待更新"
+        print(f"搜索 \"{keyword}\" — {label}文件中找到 {len(matches)} 个:\n")
+        if not matches:
+            print("  （无匹配）")
+        else:
+            for i, item in enumerate(matches, 1):
+                if item.get("commits_behind") is not None:
+                    print(f"  {i:3d}. {item['file']}  ({item['commits_behind']} behind)")
+                else:
+                    print(f"  {i:3d}. {item['file']}")
 
 
 def main():
@@ -151,10 +178,10 @@ def main():
     if "-h" in args or "--help" in args:
         print(__doc__.strip()); return
     use_json = "--json" in args
+    file_type = _get_arg(args, "--type", "outdated")
 
     if "--detail" in args:
-        idx = args.index("--detail")
-        file_path = args[idx + 1] if idx + 1 < len(args) else None
+        file_path = _get_arg(args, "--detail")
         if not file_path:
             print("错误: --detail 需要指定文件路径", file=sys.stderr)
             sys.exit(1)
@@ -166,8 +193,7 @@ def main():
                 print(result["error"])
                 sys.exit(1)
             print(f"文件: {result['file']}")
-            print(f"中文最后更新: {result.get('zh_date', '?')} ({result.get('zh_commit', '?')})")
-            print(f"状态: {'已合并' if result.get('merged') else '本地未合并'}")
+            print(f"中文最后更新: {result.get('zh_date', '?')} (基准 {result.get('en_base_commit', '?')})")
             print(f"英文变更: {result['changes_count']} 个 commit")
             if result["changes"]:
                 print("\n变更列表:")
@@ -177,34 +203,103 @@ def main():
                 print(f"\nDiff:\n{result['diff']}")
         sys.exit(0)
 
-    # --status or --dir
-    subdir = None
-    if "--dir" in args:
-        idx = args.index("--dir")
-        subdir = args[idx + 1] if idx + 1 < len(args) else None
+    # --dirs mode
+    has_dirs, dirs_arg = _get_flag_with_optional_arg(args, "--dirs")
+    if has_dirs:
+        page = int(_get_arg(args, "--page", "1"))
+        per_page = int(_get_arg(args, "--per-page", "10"))
+        result = get_status_cached()
+        _dirs_mode(result, file_type, dirs_arg, page, per_page, use_json)
+        sys.exit(0)
 
-    result = get_status(subdir)
+    # --search mode
+    search_kw = _get_arg(args, "--search")
+    if search_kw:
+        result = get_status_cached()
+        _search_mode(result, file_type, search_kw, use_json)
+        sys.exit(0)
+
+    # --status or --dir
+    subdir = _get_arg(args, "--dir")
+    page = int(_get_arg(args, "--page", "1"))
+    per_page = int(_get_arg(args, "--per-page", "10"))
+    sort_by = _get_arg(args, "--sort", "behind")
+
+    result = get_status_cached(subdir)
+
+    # Prepare items based on type
+    if file_type == "missing":
+        raw_items = result.get("missing", [])
+    else:
+        raw_items = [f for f in result["files"] if f["status"] == "outdated"]
+
+    # Sort by size if requested — enrich items with line counts
+    if sort_by == "size":
+        if file_type == "missing":
+            sized = [{"file": f, "lines": _line_count(f)} for f in raw_items]
+        else:
+            sized = [dict(**f, lines=_line_count(f["file"])) for f in raw_items]
+        sized.sort(key=lambda x: x["lines"])
+        items = sized
+        sort_label = "按行数"
+    else:
+        if file_type == "missing":
+            items = [{"file": f} for f in raw_items]
+        else:
+            items = raw_items
+        sort_label = "按落后程度"
+
+    total = len(items)
+    total_pages = (total + per_page - 1) // per_page if total else 1
+    start = (page - 1) * per_page
+    page_items = items[start:start + per_page]
 
     if use_json:
-        print(json.dumps(result, indent=2, ensure_ascii=False))
+        out = {
+            "head": result["head"],
+            "total_english": result["total_english"],
+            "total_zh": result["total_zh"],
+            "coverage": result["coverage"],
+            "files": page_items if file_type != "missing" else [],
+            "missing": page_items if file_type == "missing" else [],
+            "pagination": {
+                "type": file_type,
+                "sort": sort_by,
+                "page": page,
+                "per_page": per_page,
+                "total": total,
+                "total_pages": total_pages,
+            },
+        }
+        print(json.dumps(out, indent=2, ensure_ascii=False))
     else:
         print(f"HEAD: {result['head']}")
-        print(f"英文文件: {result['total_english']}  中文文件: {result['total_zh']}  覆盖率: {result['coverage']}%")
+        missing_count = len(result.get("missing", []))
+        outdated_count = sum(1 for f in result["files"] if f["status"] == "outdated")
+        print(f"英文文件: {result['total_english']}  中文文件: {result['total_zh']}  "
+              f"覆盖率: {result['coverage']}%  待更新: {outdated_count}  未翻译: {missing_count}")
 
-        outdated = [f for f in result["files"] if f["status"] == "outdated"]
-        if outdated:
-            top = outdated[:10] if not subdir else outdated
-            print(f"\n过期文件 (top {len(top)}):")
-            for f in top:
-                status_str = "已合并" if f["merged"] else "本地"
-                print(f"  {f['file']}  {f['commits_behind']} commits behind  "
-                      f"({f['zh_last_updated']}, {f['zh_commit']}, {status_str})")
+        label = "未翻译文件" if file_type == "missing" else "待更新翻译"
 
-        if result["missing"]:
-            show = result["missing"][:10] if not subdir else result["missing"]
-            print(f"\n缺失文件 ({len(result['missing'])} 总计, 显示 {len(show)}):")
-            for f in show:
-                print(f"  {f}")
+        if page_items:
+            print(f"\n{label} · {sort_label} (第 {page}/{total_pages} 页, 共 {total} 个):")
+            for i, item in enumerate(page_items, start=start + 1):
+                f = item["file"] if isinstance(item.get("file"), str) else item.get("file", "")
+                lines_str = f"  ({item['lines']} 行)" if "lines" in item else ""
+                behind_str = ""
+                if item.get("commits_behind") is not None:
+                    behind_str = f"  {item['commits_behind']} behind"
+                    if item.get("en_base_commit"):
+                        behind_str += f"  ({item['en_base_commit']} → {item['en_head_commit']})"
+                print(f"  {i:3d}. {f}{lines_str}{behind_str}")
+            if total_pages > 1:
+                sort_flag = f" --sort {sort_by}" if sort_by != "behind" else ""
+                nav = []
+                if page > 1:
+                    nav.append(f"上一页: kt-diff --type {file_type}{sort_flag} --page {page - 1}")
+                if page < total_pages:
+                    nav.append(f"下一页: kt-diff --type {file_type}{sort_flag} --page {page + 1}")
+                print(f"\n  → {'  |  '.join(nav)}")
 
 
 if __name__ == "__main__":
