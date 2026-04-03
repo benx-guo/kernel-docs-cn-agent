@@ -107,12 +107,15 @@ def get_status(subdir=None, on_progress=None):
 
     # Missing files
     missing = [f for f in en_files if f not in zh_file_set]
+    outdated_count = sum(1 for r in results if r["status"] == "outdated")
 
     return {
         "head": head_oneline(),
         "total_english": len(en_files),
         "total_zh": len(zh_file_set),
         "coverage": round(len(zh_file_set) / len(en_files) * 100, 1) if en_files else 0,
+        "outdated_count": outdated_count,
+        "missing_count": len(missing),
         "files": sorted(results, key=lambda x: -(x["commits_behind"] or 0)),
         "missing": missing,
     }
@@ -240,11 +243,14 @@ def _filter_by_subdir(data: dict, subdir: str) -> dict:
     missing = [f for f in data["missing"] if f.startswith(prefix)]
     zh_count = sum(1 for f in files)
     en_count = zh_count + len(missing)
+    outdated_count = sum(1 for f in files if f["status"] == "outdated")
     return {
         "head": data["head"],
         "total_english": en_count,
         "total_zh": zh_count,
         "coverage": round(zh_count / en_count * 100, 1) if en_count else 0,
+        "outdated_count": outdated_count,
+        "missing_count": len(missing),
         "files": files,
         "missing": missing,
     }
