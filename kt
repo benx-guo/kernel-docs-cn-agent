@@ -2,6 +2,14 @@
 # kt - Linux 内核中文翻译工具集入口
 cd "$(dirname "$0")"
 
+# Generate CLAUDE.md and .claude/commands/ (skip if already correct)
+ensure_link() { [ "$(readlink "$2" 2>/dev/null)" = "$1" ] || ln -sf "$1" "$2"; }
+ensure_link docs/guide.md CLAUDE.md
+mkdir -p .claude/commands
+for skill in docs/skills/*.md; do
+  ensure_link "../../$skill" ".claude/commands/$(basename "$skill")"
+done
+
 cat <<'EOF'
 Linux 内核中文翻译工具集
 
