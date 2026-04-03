@@ -240,16 +240,39 @@ cd <ROOT> && python3 bin/kt-send-patch --review <email> --series <id> --confirm
 
 设置 stage 7。
 
-先用 `bin/kt-mail` 检查反馈（如 series-state 有 cover_message_id）：
+内审回复在你的**个人邮箱**中（通过 `mbsync` 同步到本地、`notmuch` 索引查询）。
+
+**前置检查**：先确认本地邮件环境可用：
+
+```bash
+which mbsync notmuch
+```
+
+如果缺失，提示用户：
+
+```
+⚠️ 查看内审回复需要本地邮件环境（mbsync + notmuch）。
+请先配置：
+  1. 安装：sudo dnf install isync notmuch
+  2. 配置 ~/.mbsyncrc（IMAP 账号信息）
+  3. 配置 ~/.notmuch-config（notmuch setup）
+  4. 首次同步：mbsync -a && notmuch new
+
+配置完成后再回来检查回复。
+```
+
+**检查回复**（series-state 有 cover_message_id 时）：
 
 ```bash
 cd <ROOT> && python3 bin/kt-mail --thread "<cover_message_id>" --local --json
 ```
 
+这会自动执行 `mbsync -a`（拉取最新邮件）→ `notmuch new`（索引）→ 按 message-id 查询线程。
+
 根据反馈：
 - 所有补丁 approved → 进入阶段 9
 - 有 changes_requested → 展示 action items，进入阶段 8
-- 无回复 → 保持 stage 7
+- 无回复 → 提示用户稍后再来检查，保持 stage 7
 
 ### 阶段 8 — RV1（内审修订）
 
@@ -289,7 +312,20 @@ cd <ROOT> && python3 bin/kt-send-patch --submit --series <id>
 
 ### 阶段 10 — W2（等待邮件列表回复）
 
-设置 stage 10。同阶段 7 逻辑，检查本地邮件和 lore。
+设置 stage 10。
+
+正式提交后，回复会出现在公开的邮件列表存档 **lore.kernel.org** 上。通过远程查询检查（不需要本地邮件环境）：
+
+```bash
+cd <ROOT> && python3 bin/kt-mail --thread "<cover_message_id>" --json
+```
+
+注意：**不带 `--local`**，直接从 lore.kernel.org 拉取线程。
+
+根据反馈：
+- 收到 Reviewed-by / Acked-by → 进入阶段 12
+- 有修改意见 → 展示 action items，进入阶段 11
+- 无回复 → 提示用户：维护者回复通常需要几天到几周，可以先用 `/work` 翻译其他文件，稍后再来检查。保持 stage 10
 
 ### 阶段 11 — RV2（邮件列表修订）
 

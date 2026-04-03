@@ -772,20 +772,44 @@ cd <ROOT> && python3 bin/kt-send-patch --review <email> --series <context.series
 
 ### 内审循环
 
-发给内审人员后，进入等待→反馈→迭代的循环：
+发给内审人员后，进入等待→反馈→迭代的循环。
+
+**前置检查：本地邮件环境**
+
+内审回复在你的个人邮箱中，需要 `mbsync` + `notmuch` 才能拉取和查询。检查是否可用：
+
+```bash
+which mbsync notmuch
+```
+
+如果缺失，提示用户：
+
+```
+⚠️ 查看内审回复需要本地邮件环境（mbsync + notmuch）。
+请先配置：
+  1. 安装：sudo dnf install isync notmuch
+  2. 配置 ~/.mbsyncrc（IMAP 账号信息）
+  3. 配置 ~/.notmuch-config（notmuch setup）
+  4. 首次同步：mbsync -a && notmuch new
+
+配置完成后再回来检查回复。
+  [p] 暂停，配置好后用 /guide 回来
+  [s] 跳过内审，直接到 Step 8
+```
 
 **检查内审反馈（Work Stage 7: W1）**
 
 ```
-使用 Agent 工具执行 /mail 技能检查回复。
+使用 Agent 工具执行 /mail --local 技能检查回复（从本地邮箱拉取最新邮件）。
 subagent_type: "general-purpose"
-prompt: "执行 /mail 技能，检查 series <context.series_id> 的相关邮件回复。汇报是否有 Reviewed-by 或修改意见。"
+prompt: "执行 /mail --thread <cover_message_id> --local 技能，检查 series <context.series_id> 的内审回复。汇报是否有 Reviewed-by 或修改意见。"
 ```
 
 **无回复时**：
 
 ```
 内审人员还没回复，这很正常。
+（回复会到你的邮箱，下次回来时会自动同步最新邮件再检查。）
 
 你可以：
   [p] 等一等，稍后用 /guide 回来检查
@@ -923,24 +947,27 @@ git send-email \
 
 ### 步骤 2：等待社区回复（Work Stage 10: W2）
 
+正式提交后，回复会出现在公开的 **lore.kernel.org** 邮件列表存档上（不需要本地邮件环境）。
+
 ```
-使用 Agent 工具执行 /mail 技能检查回复。
+使用 Agent 工具执行 /mail 技能从 lore.kernel.org 检查回复（不带 --local）。
 subagent_type: "general-purpose"
-prompt: "执行 /mail 技能，检查 series <context.series_id> 在邮件列表上的回复。汇报是否有 Reviewed-by、Acked-by 或修改意见。"
+prompt: "执行 /mail --thread <cover_message_id> 技能（从 lore.kernel.org 拉取），检查 series <context.series_id> 在邮件列表上的回复。汇报是否有 Reviewed-by、Acked-by 或修改意见。"
 ```
 
 **无回复时**：
 
 ```
 暂时没有社区回复，这很正常——维护者可能需要几天到几周时间。
+（可以在 lore.kernel.org 上搜索你的补丁标题查看最新状态。）
 
 你可以：
-  [1] 定期用 /mail 检查回复
+  [1] 定期用 /mail 检查回复（从 lore 查询，无需本地配置）
   [2] 先去翻译其他文件（/work）
   [q] 结束引导
 ```
 
-选择等待时，更新 guide-state（阶段 7 保持 in_progress）并暂停。
+选择等待时，更新 guide-state（阶段 8 保持 in_progress）并暂停。
 
 **收到修改意见时（Work Stage 11: RV2）**：
 
