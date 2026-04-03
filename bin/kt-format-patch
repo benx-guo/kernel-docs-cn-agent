@@ -110,6 +110,27 @@ def main():
         version=version,
     )
 
+    # Fill cover letter subject and blurb
+    if cover_letter:
+        commit_subjects = git_lines("log", "--format=%s", "docs-next..HEAD")
+        # Subject: from series state, or derive from commits
+        cl_subject = None
+        if series_id:
+            ss = load_series_state(series_state_path())
+            cl_subject = ss.get("series", {}).get(series_id, {}).get("subject")
+        if not cl_subject:
+            cl_subject = "docs/zh_CN: translate documents into Chinese"
+        # Blurb: list each commit
+        cl_blurb = "\n".join(f"- {s}" for s in commit_subjects) + "\n"
+        for p_path in patches:
+            p = Path(p_path)
+            if "0000-cover-letter" not in p.name:
+                continue
+            text = p.read_text(encoding="utf-8")
+            text = text.replace("*** SUBJECT HERE ***", cl_subject)
+            text = text.replace("*** BLURB HERE ***\n", cl_blurb)
+            p.write_text(text, encoding="utf-8")
+
     # Read patch subjects
     patch_info = []
     for p_path in patches:

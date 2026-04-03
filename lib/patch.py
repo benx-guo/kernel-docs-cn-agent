@@ -76,12 +76,53 @@ def run_htmldocs(
 ) -> dict:
     """Run ``make htmldocs`` and return build results.
 
-    Returns ``{"returncode": int, "warnings": list[str], "errors": list[str]}``.
+    Returns ``{"returncode": int, "warnings": list[str], "errors": list[str],
+    "skipped": bool, "skip_reason": str | None}``.
+
+    Pre-checks: sphinx-build and GNU Make >= 4.0 must be available.
+    If not, returns skipped=True with the reason — callers should treat
+    this as a blocking error, not a pass.
     """
+    import shutil
     import os
+
+    # --- Pre-check: sphinx ---
+    has_sphinx = (shutil.which("sphinx-build") is not None or
+                  subprocess.run(
+                      ["python3", "-m", "sphinx", "--version"],
+                      capture_output=True).returncode == 0)
+    if not has_sphinx:
+        return {
+            "returncode": -1,
+            "warnings": [],
+            "errors": ["sphinx-build not installed"],
+            "skipped": True,
+            "skip_reason": "sphinx-build not installed — run: pip install sphinx",
+        }
+
+    # --- Pre-check: GNU Make >= 4.0 ---
+    import re
+    make_cmd = "make"
+    r = subprocess.run(["make", "--version"], capture_output=True, text=True)
+    first_line = r.stdout.splitlines()[0] if r.stdout else ""
+    m = re.search(r"(\d+)\.(\d+)", first_line)
+    if m and int(m.group(1)) < 4:
+        # make too old, try gmake (Homebrew on macOS)
+        if shutil.which("gmake"):
+            make_cmd = "gmake"
+        else:
+            return {
+                "returncode": -1,
+                "warnings": [],
+                "errors": [f"GNU Make >= 4.0 required, found {m.group(0)}"],
+                "skipped": True,
+                "skip_reason": f"GNU Make >= 4.0 required (found {m.group(0)})",
+            }
+
+    # --- Run htmldocs ---
     nproc = os.cpu_count() or 1
     r = subprocess.run(
-        ["make", "htmldocs", f"SPHINXOPTS=-j{nproc}"],
+        [make_cmd, "htmldocs", f"SPHINXOPTS=-j{nproc}"],
         cwd=str(kernel_dir),
         capture_output=True,
         text=True,
@@ -102,4 +143,6 @@ def run_htmldocs(
         "returncode": r.returncode,
         "warnings": warnings,
         "errors": errors,
+        "skipped": False,
+        "skip_reason": None,
     }
