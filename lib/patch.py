@@ -73,6 +73,7 @@ def run_get_maintainer(
 def run_htmldocs(
     kernel_dir: str | Path,
     filter_zh_cn: bool = True,
+    clean: bool = False,
 ) -> dict:
     """Run ``make htmldocs`` and return build results.
 
@@ -118,6 +119,14 @@ def run_htmldocs(
                 "skipped": True,
                 "skip_reason": f"GNU Make >= 4.0 required (found {m.group(0)})",
             }
+
+    # --- Clean if requested ---
+    if clean:
+        subprocess.run(
+            [make_cmd, "cleandocs"],
+            cwd=str(kernel_dir),
+            capture_output=True,
+        )
 
     # --- Run htmldocs ---
     nproc = os.cpu_count() or 1

@@ -619,6 +619,14 @@ subagent_type: "general-purpose"
 prompt: "执行 /format-patch --series <context.series_id> 技能。确保 checkpatch 和 htmldocs 验证通过。汇报生成的补丁文件列表。"
 ```
 
+3. 启动本地预览，供用户检查渲染效果：
+
+```bash
+cd <ROOT> && python3 bin/kt-check --file <chosen_file> --serve
+```
+
+在对话中展示预览 URL，用户确认后停止服务器。
+
 ### 结果展示
 
 ```markdown

@@ -2,13 +2,14 @@
 """kt-check — Translation quality checks.
 
 Usage:
-    kt-check [--file PATH] [--all] [--fix] [--json]
+    kt-check [--file PATH] [--all] [--fix] [--serve [PORT]] [--json]
 
 Options:
-    --file PATH    Check a specific file (relative to project root or linux/)
-    --all          Check all modified zh_CN .rst files (default)
-    --fix          Auto-fix trailing whitespace and CRLF
-    --json         Output JSON
+    --file PATH      Check a specific file (relative to project root or linux/)
+    --all            Check all modified zh_CN .rst files (default)
+    --fix            Auto-fix trailing whitespace and CRLF
+    --serve [PORT]   Clean rebuild htmldocs + start local HTTP server (default port 8080)
+    --json           Output JSON
 """
 
 import json
@@ -20,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib.project import root, kernel_dir, outgoing_dir
 from lib.cjk import check_line_widths
 from lib.git_helpers import git_lines
-from lib.patch import run_checkpatch
+from lib.patch import run_checkpatch, run_htmldocs
 
 
 def find_modified_files():
@@ -140,6 +141,16 @@ def main():
         print(__doc__.strip()); return
     use_json = "--json" in args
     fix = "--fix" in args
+    serve = "--serve" in args
+    serve_port = 8080
+    if serve:
+        idx = args.index("--serve")
+        next_arg = args[idx + 1] if idx + 1 < len(args) else None
+        if next_arg and not next_arg.startswith("--"):
+            try:
+                serve_port = int(next_arg)
+            except ValueError:
+                pass
 
     # Determine files to check
     files = []
@@ -182,13 +193,32 @@ def main():
     # Check patches too
     patch_results = check_patches()
 
+    # Run htmldocs (clean rebuild when --serve)
+    htmldocs_result = run_htmldocs(kernel_dir(), clean=serve)
+
     output = {
         "results": results,
         "patches": patch_results,
+        "htmldocs": {
+            "warnings": htmldocs_result["warnings"],
+            "errors": htmldocs_result["errors"],
+            "skipped": htmldocs_result.get("skipped", False),
+            "skip_reason": htmldocs_result.get("skip_reason"),
+            "html_paths": [],
+        },
         "total_errors": total_errors,
         "total_warnings": total_warnings,
         "fixed": fix,
     }
+
+    # Compute HTML paths
+    kd = kernel_dir()
+    output_htmldir = kd / "Documentation" / "output"
+    for f in files:
+        rel = Path(f).relative_to(kd / "Documentation")
+        html = output_htmldir / rel.with_suffix(".html")
+        if html.is_file():
+            output["htmldocs"]["html_paths"].append(str(html))
 
     if use_json:
         # Serialize line_width dicts
@@ -224,11 +254,58 @@ def main():
             for pr in patch_results:
                 print(f"  {pr['patch']}: {pr['errors']} errors, {pr['warnings']} warnings")
 
+        print(f"\n{'='*60}")
+        print("htmldocs 构建:")
+        if htmldocs_result.get("skipped"):
+            print(f"  ⊘ 跳过: {htmldocs_result['skip_reason']}")
+        elif htmldocs_result["errors"]:
+            print(f"  ✗ {len(htmldocs_result['errors'])} errors")
+            for e in htmldocs_result["errors"]:
+                print(f"    {e}")
+        elif htmldocs_result["warnings"]:
+            print(f"  ! {len(htmldocs_result['warnings'])} warnings")
+            for w in htmldocs_result["warnings"]:
+                print(f"    {w}")
+        else:
+            print("  ✓ 无 zh_CN 相关问题")
+
+        if output["htmldocs"]["html_paths"]:
+            print(f"\n  预览:")
+            for hp in output["htmldocs"]["html_paths"]:
+                print(f"    file://{hp}")
+
         print(f"\n总计: {total_errors} errors, {total_warnings} warnings")
         if total_errors > 0 and not fix:
             fixable = any(r["trailing_whitespace"] or r["crlf"] for r in results)
             if fixable:
                 print("提示: 用 --fix 自动修复行尾空白和 CRLF")
+
+    # Start local server if --serve
+    if serve and not htmldocs_result.get("skipped"):
+        import http.server
+        import threading
+
+        doc_root = str(kd / "Documentation" / "output")
+
+        handler = http.server.SimpleHTTPRequestHandler
+        httpd = http.server.HTTPServer(("127.0.0.1", serve_port), handler)
+        httpd_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        httpd_thread.start()
+
+        print(f"\n{'='*60}")
+        print(f"预览服务已启动: http://localhost:{serve_port}/")
+        if output["htmldocs"]["html_paths"]:
+            for hp in output["htmldocs"]["html_paths"]:
+                rel = Path(hp).relative_to(doc_root)
+                print(f"  → http://localhost:{serve_port}/{rel}")
+        print(f"\n按 Ctrl+C 停止服务器。")
+
+        import os
+        os.chdir(doc_root)
+        try:
+            httpd_thread.join()
+        except KeyboardInterrupt:
+            print("\n服务器已停止。")
 
     sys.exit(1 if total_errors > 0 else 0)
 

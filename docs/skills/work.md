@@ -192,6 +192,11 @@ cd <ROOT> && python3 bin/kt-check --file linux/Documentation/translations/zh_CN/
    cd <ROOT> && python3 bin/kt-format-patch --series <id> --json
    ```
 5. **必须**验证 checkpatch + htmldocs（bin/kt-format-patch 自动完成）
+6. 启动本地预览，供用户在浏览器中检查渲染效果：
+   ```bash
+   cd <ROOT> && python3 bin/kt-check --file <file> --serve
+   ```
+   在对话中展示预览 URL，用户确认后停止服务器。
 
 提议：_"补丁已生成。建议先发给自己测试。"_
 
