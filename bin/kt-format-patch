@@ -50,17 +50,17 @@ def main():
     # Resolve series branch and switch if needed
     orig_branch = current_branch()
     series_branch = None
+    phase = None
     if series_id:
         ss = load_series_state(series_state_path())
         s = ss.get("series", {}).get(series_id)
         if s:
             series_branch = s.get("branch")
             phase = s["phase"]
-            rounds = s["phases"].get(phase, {}).get("rounds", [])
-            if rounds:
-                version = len(rounds) + 1
-            elif phase == "upstream":
-                version = None  # upstream v1, no reroll
+            # version (--reroll-count) is per-phase
+            phase_rounds = len(s["phases"].get(phase, {}).get("rounds", []))
+            if phase_rounds > 0:
+                version = phase_rounds + 1
 
     # Switch to series branch if needed
     if series_branch and current_branch() != series_branch:
@@ -90,11 +90,17 @@ def main():
             print(msg)
         sys.exit(1)
 
-    # Determine output directory: outgoing/<series-id>/v<N>/ or outgoing/
+    # Determine output directory:
+    #   outgoing/<series-id>/<phase>/v<N>/  (with series + phase)
+    #   outgoing/<series-id>/v<N>/          (with series, no phase)
+    #   outgoing/                           (no series)
     od_base = outgoing_dir()
     ver = version if version else 1
     if series_id:
-        od = od_base / series_id / f"v{ver}"
+        if phase:
+            od = od_base / series_id / phase / f"v{ver}"
+        else:
+            od = od_base / series_id / f"v{ver}"
     else:
         od = od_base
     if od.is_dir():
@@ -149,12 +155,8 @@ def main():
         p = Path(p_path)
         if "0000-cover-letter" in p.name:
             continue
-        maintainers = run_get_maintainer(p, kd)
-        recipients.update(maintainers)
-
-    # Always include defaults
-    recipients.add("Alex Shi <alexs@kernel.org>")
-    recipients.add("linux-doc@vger.kernel.org")
+        for entry in run_get_maintainer(p, kd):
+            recipients.add(entry["addr"])
 
     # Validate patches
     checkpatch_results = []
@@ -177,7 +179,10 @@ def main():
 
     # Auto-generate previous version patches if missing
     if series_id and ver > 1:
-        prev_dir = od_base / series_id / f"v{ver - 1}"
+        if phase:
+            prev_dir = od_base / series_id / phase / f"v{ver - 1}"
+        else:
+            prev_dir = od_base / series_id / f"v{ver - 1}"
         if not prev_dir.is_dir():
             ss = load_series_state(series_state_path())
             s = ss.get("series", {}).get(series_id)

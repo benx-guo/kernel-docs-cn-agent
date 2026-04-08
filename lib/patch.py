@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -55,19 +56,53 @@ def run_checkpatch(
 def run_get_maintainer(
     patch_file: str | Path,
     kernel_dir: str | Path,
-) -> list[str]:
-    """Run get_maintainer.pl on a patch and return the list of recipients."""
+) -> list[dict]:
+    """Run get_maintainer.pl on a patch and return structured recipients.
+
+    Each entry: ``{"addr": "Name <email>", "role": "maintainer"|"reviewer"|...}``.
+
+    Raises RuntimeError if the script fails, to prevent silently
+    sending patches without proper recipients.
+    """
     script = Path(kernel_dir) / "scripts" / "get_maintainer.pl"
     if not script.is_file():
-        return []
+        raise RuntimeError(
+            f"get_maintainer.pl not found: {script}\n"
+            "请先运行 kt-setup 克隆内核仓库。"
+        )
 
     r = subprocess.run(
-        ["perl", str(script), "--no-rolestats", str(patch_file)],
+        ["perl", str(script), str(patch_file)],
         cwd=str(kernel_dir),
         capture_output=True,
         text=True,
     )
-    return [l.strip() for l in r.stdout.splitlines() if l.strip()]
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"get_maintainer.pl 执行失败 (exit {r.returncode}):\n{r.stderr.strip()}\n"
+            "请检查 perl 依赖（运行 kt-setup --check-deps）。"
+        )
+    results = []
+    for line in r.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # Format: "Name <email> (role:SUBSYSTEM)" or "list@host (open list)"
+        m = re.match(r'^(.+?)\s+\((.+?)(?::[^)]*)?\)$', line)
+        if m:
+            addr = m.group(1).strip()
+            role = m.group(2).strip()
+            if role == "open list":
+                role = "open"
+            results.append({"addr": addr, "role": role})
+        else:
+            results.append({"addr": line, "role": "unknown"})
+    if not results:
+        raise RuntimeError(
+            f"get_maintainer.pl 返回空结果: {patch_file}\n"
+            "请检查补丁文件是否有效。"
+        )
+    return results
 
 
 def run_htmldocs(

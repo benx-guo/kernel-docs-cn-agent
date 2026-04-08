@@ -2,21 +2,23 @@
 """kt-series — Patch series lifecycle management.
 
 Usage:
-    kt-series [--list | --show ID | --create | --delete ID | --advance ID | --diff ID | --current | --dashboard] [--json]
+    kt-series [--list | --show ID | --create | --delete ID | --advance ID | --diff ID | --current | --dashboard | --check-feedback [ID]] [--json]
 
 Options:
-    --list          List active series (default)
-    --show ID       Show detailed status for a series
-    --create        Create a new series from current commits
-    --delete ID     Delete a series and its work branch
-    --advance ID    Advance series to the next phase
-    --diff ID       Show range-diff between current and previous version
-    --current       Show status of the series on the current branch
-    --dashboard     Show full dashboard view
-    --json          Output JSON
+    --list              List active series (default)
+    --show ID           Show detailed status for a series
+    --create            Create a new series from current commits
+    --delete ID         Delete a series and its work branch
+    --advance ID        Advance series to the next phase
+    --diff ID           Show range-diff between current and previous version
+    --current           Show status of the series on the current branch
+    --dashboard         Show full dashboard view
+    --check-feedback    Check for replies to the latest round (auto-detects series from branch)
+    --json              Output JSON
 """
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -564,6 +566,112 @@ def do_dashboard(use_json):
         print(" → ".join(parts))
 
 
+def do_check_feedback(series_id, use_json):
+    """Check for replies to the latest round of a series."""
+    # Auto-detect series from branch if not specified
+    if not series_id:
+        series_id = series_id_from_branch()
+    if not series_id:
+        branch = current_branch()
+        msg = f"无法推断 series id（当前分支 '{branch}' 不是 zh-work/* 分支），请指定 ID。"
+        if use_json:
+            print(json.dumps({"error": msg}))
+        else:
+            print(msg, file=sys.stderr)
+        sys.exit(1)
+
+    ssp = series_state_path()
+    s = get_series(ssp, series_id)
+    if not s:
+        msg = f"系列 '{series_id}' 不存在"
+        if use_json:
+            print(json.dumps({"error": msg}))
+        else:
+            print(msg, file=sys.stderr)
+        sys.exit(1)
+
+    phase = s["phase"]
+    phase_data = s["phases"].get(phase, {})
+    rounds = phase_data.get("rounds", [])
+    if not rounds:
+        msg = f"系列 '{series_id}' 在 {phase} 阶段没有发送记录。"
+        if use_json:
+            print(json.dumps({"error": msg, "series_id": series_id, "phase": phase}))
+        else:
+            print(msg, file=sys.stderr)
+        sys.exit(1)
+
+    latest = rounds[-1]
+    cover_mid = latest.get("cover_message_id", "")
+    if not cover_mid:
+        msg = f"系列 '{series_id}' v{latest['version']} 没有 cover_message_id。"
+        if use_json:
+            print(json.dumps({"error": msg, "series_id": series_id}))
+        else:
+            print(msg, file=sys.stderr)
+        sys.exit(1)
+
+    # Build kt-mail --replies command based on phase
+    bin_dir = Path(__file__).resolve().parent
+    cmd = [sys.executable, str(bin_dir / "kt-mail"), "--replies", cover_mid, "--json"]
+    if phase == "internal_review":
+        cmd.append("--local")
+
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        msg = f"kt-mail 失败: {r.stderr.strip()}"
+        if use_json:
+            print(json.dumps({"error": msg}))
+        else:
+            print(msg, file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        mail_result = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        msg = f"解析 kt-mail 输出失败: {r.stdout[:200]}"
+        if use_json:
+            print(json.dumps({"error": msg}))
+        else:
+            print(msg, file=sys.stderr)
+        sys.exit(1)
+
+    replies = mail_result.get("messages", [])
+    source = "本地邮箱" if phase == "internal_review" else "lore"
+
+    if use_json:
+        print(json.dumps({
+            "series_id": series_id,
+            "phase": phase,
+            "version": latest["version"],
+            "cover_message_id": cover_mid,
+            "source": source,
+            "replies": replies,
+            "count": len(replies),
+        }, indent=2, ensure_ascii=False))
+    else:
+        print(f"系列: {series_id}  阶段: {phase}  版本: v{latest['version']}")
+        print(f"查询来源: {source}")
+        print(f"Cover Message-ID: {cover_mid}")
+        if not replies:
+            print("\n暂无回复。")
+        else:
+            print(f"\n共 {len(replies)} 条回复:\n")
+            for msg in replies:
+                print(f"{'='*60}")
+                print(f"  From:    {msg.get('from', '?')}")
+                print(f"  Subject: {msg.get('subject', '?')}")
+                print(f"  Date:    {msg.get('date', '?')}")
+                body = msg.get("body", "").rstrip()
+                lines = body.split("\n")
+                if len(lines) > 80:
+                    print("\n".join(lines[:80]))
+                    print(f"\n... ({len(lines) - 80} more lines)")
+                else:
+                    print(body)
+            print()
+
+
 def main():
     args = sys.argv[1:]
     if "-h" in args or "--help" in args:
@@ -605,6 +713,13 @@ def main():
         do_diff(series_id, use_json)
     elif "--current" in args:
         do_current(use_json)
+    elif "--check-feedback" in args:
+        idx = args.index("--check-feedback")
+        # Optional series id: next arg if it exists and doesn't start with --
+        series_id = None
+        if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
+            series_id = args[idx + 1]
+        do_check_feedback(series_id, use_json)
     elif "--dashboard" in args:
         do_dashboard(use_json)
     else:

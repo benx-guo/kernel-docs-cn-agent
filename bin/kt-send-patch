@@ -29,27 +29,33 @@ from lib.patch import run_get_maintainer
 from lib.state import load_series_state, get_series, add_round
 
 
-def find_patches(series_id=None):
+def find_patches(series_id=None, phase=None):
     """Find patch files in outgoing/.
 
-    Looks in ``outgoing/<series_id>/v<latest>/`` first,
-    falls back to ``outgoing/<series_id>/*.patch``,
+    Looks in ``outgoing/<series_id>/<phase>/v<latest>/`` first,
+    falls back to ``outgoing/<series_id>/v<latest>/``,
+    then ``outgoing/<series_id>/*.patch``,
     then ``outgoing/*.patch``.
     """
     od = outgoing_dir()
     if series_id:
         series_dir = od / series_id
         if series_dir.is_dir():
+            # Determine search root: phase subdir if available
+            if phase and (series_dir / phase).is_dir():
+                search_root = series_dir / phase
+            else:
+                search_root = series_dir
             # Find latest version subdirectory
             ver_dirs = sorted(
-                [d for d in series_dir.iterdir()
+                [d for d in search_root.iterdir()
                  if d.is_dir() and d.name.startswith("v") and d.name[1:].isdigit()],
                 key=lambda d: int(d.name[1:]),
             )
             if ver_dirs:
                 return sorted(ver_dirs[-1].glob("*.patch"))
-            # Fallback: flat patches in series dir
-            return sorted(series_dir.glob("*.patch"))
+            # Fallback: flat patches in search root
+            return sorted(search_root.glob("*.patch"))
     # Fallback: flat outgoing/*.patch
     if not od.is_dir():
         return []
@@ -72,7 +78,8 @@ def load_email_conf():
     return result
 
 
-def send_email(to_list, cc_list, patches, dry_run=False, in_reply_to=None):
+def send_email(to_list, cc_list, patches, dry_run=False, in_reply_to=None,
+               suppress_cc=False):
     """Build and run git send-email command. Returns (returncode, stdout, stderr)."""
     cmd = ["git", "send-email"]
     for addr in to_list:
@@ -80,6 +87,8 @@ def send_email(to_list, cc_list, patches, dry_run=False, in_reply_to=None):
     for addr in cc_list:
         cmd += [f"--cc={addr}"]
     cmd += ["--confirm=never"]
+    if suppress_cc:
+        cmd += ["--suppress-cc=all"]
     if dry_run:
         cmd += ["--dry-run"]
     if in_reply_to:
@@ -172,8 +181,15 @@ def main():
         idx = args.index("--in-reply-to")
         in_reply_to = args[idx + 1] if idx + 1 < len(args) else None
 
+    # Read series phase for patch lookup
+    phase = None
+    if series_id:
+        s = get_series(series_state_path(), series_id)
+        if s:
+            phase = s.get("phase")
+
     # Check prerequisites
-    patches = find_patches(series_id=series_id)
+    patches = find_patches(series_id=series_id, phase=phase)
     if not patches:
         msg = "没有补丁文件。请先运行 kt-format-patch。"
         if use_json:
@@ -242,21 +258,33 @@ def main():
         # Remove self from cc
         cc_list = [a for a in cc_list if email not in a]
     elif mode == "submit":
-        # Collect from get_maintainer
+        # Collect from get_maintainer with role info
         kd = kernel_dir()
-        all_recipients = set()
+        # addr -> best role (maintainer > reviewer > open > others)
+        addr_roles = {}
+        ROLE_PRIORITY = {"maintainer": 0, "reviewer": 1, "open": 2,
+                         "commit_signer": 3, "removed_lines": 4, "unknown": 5}
         for p in patches:
             if "0000-cover-letter" in p.name:
                 continue
-            maintainers = run_get_maintainer(p, kd)
-            all_recipients.update(maintainers)
+            entries = run_get_maintainer(p, kd)
+            for e in entries:
+                addr, role = e["addr"], e["role"]
+                prev = addr_roles.get(addr)
+                if prev is None or ROLE_PRIORITY.get(role, 9) < ROLE_PRIORITY.get(prev, 9):
+                    addr_roles[addr] = role
 
-        to_list = ["Alex Shi <alexs@kernel.org>"]
-        cc_list = ["linux-doc@vger.kernel.org"]
-        # Add maintainer addresses
-        for r in all_recipients:
-            if r not in to_list and r not in cc_list:
-                cc_list.append(r)
+        # To: maintainers; Cc: everyone else
+        to_list = []
+        cc_list = []
+        for addr, role in addr_roles.items():
+            # Skip self
+            if email in addr:
+                continue
+            if role == "maintainer":
+                to_list.append(addr)
+            else:
+                cc_list.append(addr)
 
     confirmed = "--confirm" in args
 
@@ -276,6 +304,7 @@ def main():
     for addr in cc_list:
         cmd_parts.append(f"--cc='{addr}'")
     cmd_parts.append("--confirm=never")
+    cmd_parts.append("--suppress-cc=all")
     if in_reply_to:
         mid = in_reply_to.strip("<>")
         cmd_parts.append(f"--in-reply-to='<{mid}>'")
@@ -320,7 +349,8 @@ def main():
     # Execute send (--self and --review --confirm only)
     is_dry = dry_run
     rc, stdout, stderr = send_email(to_list, cc_list, patches,
-                                    dry_run=is_dry, in_reply_to=in_reply_to)
+                                    dry_run=is_dry, in_reply_to=in_reply_to,
+                                    suppress_cc=True)
 
     result["returncode"] = rc
     result["stdout"] = stdout

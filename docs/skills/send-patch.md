@@ -6,20 +6,46 @@
 
 用户必须明确指定阶段。如果没有指定，询问用户要用哪个阶段，并建议从 `--self` 开始。
 
+## 确认规则（所有模式通用）
+
+**禁止自动加 `--confirm`。** 所有模式都必须：
+1. 先不带 `--confirm` 运行，展示预览（收件人、补丁列表）
+2. 等用户明确回复"确认"/"发送"/"ok"后，才加 `--confirm` 重新执行
+
 ## 模式 1：`--self`（发给自己测试）
+
+### 1a. 预览
 
 ```bash
 cd <ROOT> && python3 bin/kt-send-patch --self [额外参数] --json
+```
+
+展示收件人和补丁列表，等用户确认。
+
+### 1b. 用户确认后发送
+
+```bash
+cd <ROOT> && python3 bin/kt-send-patch --self --confirm [额外参数] --json
 ```
 
 发送后提示用户检查邮箱确认格式。
 
 ## 模式 2：`--review <email>`（发给内审人员）
 
-确认 review 邮箱地址后执行：
+### 2a. 预览
+
+确认 review 邮箱地址后：
 
 ```bash
 cd <ROOT> && python3 bin/kt-send-patch --review <email> [额外参数] --json
+```
+
+展示收件人和补丁列表，等用户确认。
+
+### 2b. 用户确认后发送
+
+```bash
+cd <ROOT> && python3 bin/kt-send-patch --review <email> --confirm [额外参数] --json
 ```
 
 ## 模式 3：`--submit`（正式提交到邮件列表）
@@ -56,6 +82,16 @@ cd <ROOT> && python3 bin/kt-send-patch --submit [额外参数] --json
 - `bin/kt-send-patch` 自动从 series-state.json 读取配置
 - v2+ 自动带 `--in-reply-to`
 - 发送后自动更新 series-state（新 round、status=sent）
+
+## 收件人筛选（--submit 模式）
+
+`get_maintainer.pl` 会基于补丁内容的关键词匹配收件人。翻译补丁包含各子系统的术语（如 riscv、clang、llvm），会导致大量**不相关的 maintainer/reviewer** 被误匹配。
+
+展示收件人列表时，必须提醒用户根据翻译内容筛选，排除不相关的人：
+
+- **保留**：`CHINESE DOCUMENTATION`（maintainer + reviewer）、`DOCUMENTATION`（maintainer + reviewer）、相关邮件列表（open list）
+- **排除**：`commit_signer`（仅因相邻目录活跃）、`removed_lines`（补丁作者自己）、因关键词误匹配的其他子系统 maintainer/reviewer（如翻译 Rust 文档不需要 To RISC-V maintainer）
+- **酌情保留**：翻译主题对应子系统的 maintainer（如翻译 Rust 文档可考虑 Cc rust-for-linux 列表）
 
 ## 安全提醒
 

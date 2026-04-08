@@ -30,12 +30,20 @@ from lib.diff import get_status_cached
 
 def check_deps():
     """Check required and optional dependencies."""
-    required = {"git": False, "python3": False, "make": False, "perl": False}
+    required = {"git": False, "python3": False, "make": False, "perl": False,
+                "perl-open": False}
     optional = {"sphinx-build": False, "mbsync": False, "notmuch": False,
                 "git-send-email": False}
 
     for cmd in required:
-        required[cmd] = shutil.which(cmd) is not None
+        if cmd == "perl-open":
+            r = subprocess.run(
+                ["perl", "-e", "use open qw(:std :encoding(UTF-8)); print 1"],
+                capture_output=True, text=True,
+            )
+            required[cmd] = r.returncode == 0
+        else:
+            required[cmd] = shutil.which(cmd) is not None
 
     for cmd in optional:
         if cmd == "git-send-email":

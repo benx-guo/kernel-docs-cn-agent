@@ -4,10 +4,12 @@
 Usage:
     kt-mail --search QUERY [--local] [--json]
     kt-mail --thread ID_OR_URL [--local] [--json]
+    kt-mail --replies ID_OR_URL [--local] [--json]
 
 Options:
     --search QUERY   Search lore.kernel.org (or local notmuch)
     --thread ID      View a thread by message-id or lore URL
+    --replies ID     View only replies in a thread (is_reply == True)
     --local          Use local notmuch database instead of lore
     --json           Output JSON
 """
@@ -187,13 +189,18 @@ def thread_local(message_id):
                         for sub in part["content"]:
                             if isinstance(sub, dict) and sub.get("content-type", "").startswith("text/plain"):
                                 body_text = sub.get("content", "")
+                in_reply_to = hdrs.get("In-Reply-To", "")
+                subject = hdrs.get("Subject", "?")
+                # notmuch JSON doesn't always include In-Reply-To;
+                # fall back to subject starting with "Re:"
+                is_reply = bool(in_reply_to) or subject.startswith("Re:")
                 messages.append({
                     "from": hdrs.get("From", "?"),
-                    "subject": hdrs.get("Subject", "?"),
+                    "subject": subject,
                     "date": hdrs.get("Date", "?"),
                     "message_id": hdrs.get("Message-ID", "?"),
-                    "in_reply_to": hdrs.get("In-Reply-To", ""),
-                    "is_reply": bool(hdrs.get("In-Reply-To")),
+                    "in_reply_to": in_reply_to,
+                    "is_reply": is_reply,
                     "body": body_text,
                 })
 
@@ -279,7 +286,46 @@ def main():
                     print(body)
         sys.exit(0)
 
-    print("用法: kt-mail --search QUERY | --thread ID_OR_URL", file=sys.stderr)
+    if "--replies" in args:
+        idx = args.index("--replies")
+        id_or_url = args[idx + 1] if idx + 1 < len(args) else None
+        if not id_or_url:
+            print("错误: --replies 需要 message-id 或 URL", file=sys.stderr)
+            sys.exit(1)
+
+        mid = extract_message_id(id_or_url)
+
+        if use_local:
+            result = thread_local(mid)
+            if "error" in result:
+                print(result["error"], file=sys.stderr)
+                sys.exit(1)
+            messages = result["messages"]
+        else:
+            messages = fetch_thread_mbox(mid)
+
+        replies = [m for m in messages if m["is_reply"]]
+
+        if use_json:
+            print(json.dumps({"message_id": mid, "messages": replies,
+                              "count": len(replies)}, indent=2, ensure_ascii=False))
+        else:
+            print(f"线程: {mid} ({len(replies)} 条回复)")
+            for msg in replies:
+                print(f"\n{'='*60}")
+                print(f"  From:    {msg['from']}")
+                print(f"  Subject: {msg['subject']}")
+                print(f"  Date:    {msg['date']}")
+                body = msg["body"].rstrip()
+                lines = body.split("\n")
+                if len(lines) > 100:
+                    print("\n".join(lines[:100]))
+                    print(f"\n... ({len(lines) - 100} more lines)")
+                else:
+                    print(body)
+        sys.exit(0)
+
+    print("用法: kt-mail --search QUERY | --thread ID_OR_URL | --replies ID_OR_URL", file=sys.stderr)
     sys.exit(1)
 
 
