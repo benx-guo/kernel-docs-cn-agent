@@ -269,8 +269,10 @@ cd <ROOT> && python3 bin/kt-mail --thread "<cover_message_id>" --local --json
 
 这会自动执行 `mbsync -a`（拉取最新邮件）→ `notmuch new`（索引）→ 按 message-id 查询线程。
 
+分析反馈后，更新 series-state.json 中对应 round 的 per_patch 数据（tags、status、action_items）。如果讨论后决策变更（如 changes_requested → approved），同步更新 status 并记录原因。
+
 根据反馈：
-- 所有补丁 approved → 进入阶段 9
+- 所有补丁 approved/acked → 主动提议：_"内审通过，是否推进到上游提交（阶段 9）？"_ 用户确认后进入阶段 9
 - 有 changes_requested → 展示 action items，进入阶段 8
 - 无回复 → 提示用户稍后再来检查，保持 stage 7
 
@@ -292,10 +294,10 @@ cd <ROOT> && python3 bin/kt-mail --thread "<cover_message_id>" --local --json
 
 设置 stage 9。（`kt-format-patch` 会自动 sync + rebase，无需手动运行 `kt-sync`。）
 
-如果从内审推进，调用 advance 逻辑（收集 Reviewed-by，soft reset，重新 commit，重新 format-patch）：
+如果从内审推进，调用 advance 逻辑（soft reset，重新 commit，重新 format-patch）：
 
 自动完成准备工作：
-- 收集 Reviewed-by 并重新 commit
+- soft reset，重新 commit（不带内审标签，只保留 Signed-off-by）
 - 重新 format-patch（上游 v1）
 
 然后运行 `kt-send-patch --submit` 生成 `git send-email` 命令：
@@ -322,8 +324,10 @@ cd <ROOT> && python3 bin/kt-mail --thread "<cover_message_id>" --json
 
 注意：**不带 `--local`**，直接从 lore.kernel.org 拉取线程。
 
+分析反馈后，更新 series-state.json 中对应 round 的 per_patch 数据（tags、status、action_items）。如果讨论后决策变更，同步更新 status 并记录原因。
+
 根据反馈：
-- 收到 Reviewed-by / Acked-by → 进入阶段 12
+- 收到 Reviewed-by / Acked-by（所有补丁 approved） → 主动提议：_"补丁已被接受，是否归档（阶段 12）？"_ 用户确认后进入阶段 12
 - 有修改意见 → 展示 action items，进入阶段 11
 - 无回复 → 提示用户：维护者回复通常需要几天到几周，可以先用 `/work` 翻译其他文件，稍后再来检查。保持 stage 10
 
@@ -344,7 +348,20 @@ cd <ROOT> && python3 bin/kt-mail --thread "<cover_message_id>" --json
 cd <ROOT> && python3 bin/kt-series --advance <id> --json
 ```
 
-这会标记 phase=merged。向用户确认是否删除工作分支：
+这会标记 phase=merged。
+
+归档前，检查是否有未完成的后续任务（如依赖上游其他改动的更新）。如果有，写入 series 的 `follow_up` 字段：
+
+```python
+# 示例：通过 update_series_field 写入
+update_series_field(ssp, series_id, follow_up=[
+    {"file": "rust/quick-start.rst", "description": "等 rust-next 改动落入后更新", "waiting_for": "rust-next merge window"}
+])
+```
+
+汇报时提醒用户有待跟进的后续任务。
+
+向用户确认是否删除工作分支：
 
 ```bash
 cd <ROOT> && python3 bin/kt-series --delete <id> --json

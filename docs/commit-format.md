@@ -55,5 +55,6 @@ Signed-off-by: Zhang San <zhangsan@example.com>
 - The through-commit hash and subject must refer to the **latest commit** that
   touched the English source file at the time of translation.
 - The `Signed-off-by` line uses the name and email from your git configuration.
-- When a patch receives `Reviewed-by` tags during review, insert them on
-  separate lines immediately **before** the `Signed-off-by` line.
+- When a patch receives review tags (`Reviewed-by`, `Acked-by`, etc.) during
+  review, insert them on separate lines immediately **before** the
+  `Signed-off-by` line.

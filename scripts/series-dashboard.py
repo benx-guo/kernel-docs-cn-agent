@@ -225,9 +225,9 @@ class SeriesDashboard(App):
                 # Truncate long filenames
                 if len(fname) > 30:
                     fname = "…" + fname[-29:]
-                rb = p.get("reviewed_by", [])
-                rb_str = f"  [dim]Rb: {', '.join(rb)}[/]" if rb else ""
-                lines.append(f"  {icon} {num}: {fname}{rb_str}")
+                tags = p.get("tags", p.get("reviewed_by", []))
+                tags_str = f"  [dim]Tags: {', '.join(tags)}[/]" if tags else ""
+                lines.append(f"  {icon} {num}: {fname}{tags_str}")
 
             lines.append("")
 

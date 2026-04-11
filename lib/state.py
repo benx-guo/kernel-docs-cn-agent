@@ -162,7 +162,7 @@ def add_round(
         per_patch[str(i)] = {
             "file": f,
             "status": "no_feedback",
-            "reviewed_by": [],
+            "tags": [],
             "action_items": [],
         }
 

@@ -8,12 +8,12 @@ to final merge into the kernel tree:
 ```
 Translation -> Check -> Patch -> Self-test
   -> Internal review circle: v1 -> feedback -> revise -> v2 -> ... -> vN -> approved
-  -> Upstream circle: v1 (with Reviewed-by) -> feedback -> ... -> vN -> merged
+  -> Upstream circle: v1 -> feedback -> ... -> vN -> merged
 ```
 
-Key rule: the upstream submission **resets to v1**. Reviewed-by tags collected
-during internal review are embedded into the commit messages before upstream
-submission.
+Key rule: the upstream submission **resets to v1**. Internal review tags are
+**not** carried over — upstream reviewers give their own tags on the public
+mailing list.
 
 ## State Schema
 
@@ -28,6 +28,9 @@ Series state is stored in `data/series-state.json`:
       "files": ["path/relative/to/zh_CN/"],
       "commits": ["hash1", "hash2"],
       "phase": "internal_review | upstream | merged",
+      "follow_up": [
+        {"file": "path", "description": "...", "waiting_for": "..."}
+      ],
       "phases": {
         "internal_review": {
           "status": "pending | sent | feedback_received | revising | approved",
@@ -39,7 +42,7 @@ Series state is stored in `data/series-state.json`:
               "1": {
                 "file": "...",
                 "status": "approved | changes_requested | no_feedback",
-                "reviewed_by": [],
+                "tags": [],
                 "action_items": []
               }
             }
@@ -64,17 +67,16 @@ Generated from the subdirectory and date: `<subdir>-YYYY-MM`
 
 | From              | To        | Trigger                      | Actions                         |
 |-------------------|-----------|------------------------------|---------------------------------|
-| internal_review   | upstream  | All patches approved         | Collect Reviewed-by, soft reset commits, re-commit with tags, re-format-patch (v1) |
+| internal_review   | upstream  | All patches approved         | Soft reset commits, re-commit, re-format-patch (v1) |
 | upstream          | merged    | Maintainer applies the patch | Mark phase as merged            |
 
 ### Transition: internal_review to upstream
 
-1. Collect all `Reviewed-by` tags from the latest internal review round.
-2. Soft reset commits back to the docs-next base.
-3. Re-commit each file with `Reviewed-by` lines inserted before `Signed-off-by`.
-4. Regenerate patches as v1 (no `--reroll-count`), since upstream versioning
+1. Soft reset commits back to the docs-next base.
+2. Re-commit each file (no internal review tags — only `Signed-off-by`).
+3. Regenerate patches as v1 (no `--reroll-count`), since upstream versioning
    starts fresh.
-5. Update series state: `internal_review.status = "approved"`,
+4. Update series state: `internal_review.status = "approved"`,
    `phase = "upstream"`, `upstream.status = "pending"`.
 
 ## Round Versioning
@@ -92,14 +94,17 @@ Each round records:
 - `sent_at`: The date the patches were sent.
 - `cover_message_id`: The Message-ID of the cover letter (used for
   `--in-reply-to` threading in subsequent versions).
-- `per_patch`: Per-patch feedback status, reviewer tags, and action items.
+- `per_patch`: Per-patch feedback status, tags, and action items.
 
-## Reviewed-by Collection
+## Tag Collection
 
-When advancing from internal review to upstream:
+Tags (`Reviewed-by`, `Acked-by`, etc.) are stored as complete tag lines in
+`per_patch.tags` — e.g., `"Reviewed-by: Name <email>"`. This keeps the format
+consistent with commit messages and avoids needing to distinguish tag types.
 
-- All `reviewed_by` entries from the latest round's `per_patch` are collected.
-- These tags are inserted into the commit message of each corresponding patch,
-  on separate lines before `Signed-off-by`.
-- This ensures upstream reviewers can see that the patch has already been
-  reviewed internally.
+Internal review tags are **not** embedded into upstream commits. Internal
+review is for quality assurance only — reviewers give their tags independently
+on the public mailing list.
+
+Upstream review tags (Reviewed-by, Acked-by, etc.) are collected from mailing
+list replies and embedded into commits when preparing the next version (vN).

@@ -76,17 +76,22 @@ cd <ROOT> && python3 bin/kt-mail --thread "<cover_message_id>" --local --json
 根据获取到的回复，分析每个回复：
 
 1. **判断回复对应哪个补丁**：从 Subject 中的 `[PATCH N/M]` 或 In-Reply-To 关联
-2. **提取 Reviewed-by**
+2. **提取标签**：Reviewed-by、Acked-by 等（以完整标签行格式存入 `tags` 字段，如 `"Reviewed-by: Name <email>"`）
 3. **提取修改意见**
-4. **判断状态**：有 Reviewed-by → approved，有意见 → changes_requested
+4. **判断 per_patch status**：有 Reviewed-by / Acked-by → `approved`，有意见 → `changes_requested`
+5. **更新决策变更**：如果经过邮件讨论后决策发生变更（如 changes_requested → approved），也应更新 per_patch status 并将决策原因记录到 action_items（如 `"讨论后决定按现有版本接受"`）
 
 ### 更新 series-state.json
 
-更新对应 round 的 per_patch 数据。
+更新对应 round 的 per_patch 数据（tags、status、action_items）。
 
 ### 汇报
 
-用中文汇报反馈摘要。
+用中文汇报反馈摘要。根据结果主动提示下一步操作：
+
+- 所有补丁 approved/acked → _"所有补丁已通过审阅，建议推进到下一阶段。是否执行 `--advance`？"_
+- 有 changes_requested → _"以下补丁需要修改，建议执行 `--prepare-next` 开始修订。"_
+- 无反馈 → _"暂无反馈，建议稍后再检查。"_
 
 ---
 
@@ -123,12 +128,12 @@ cd <ROOT> && python3 bin/kt-series --advance <id> --json
 自动将 phase 设为 `upstream`。
 
 推进后，AI 应完成以下步骤：
-1. 收集所有 Reviewed-by（从 series-state.json 最新 round）
+1. 收集所有标签（Reviewed-by、Acked-by 等，从 series-state.json 最新 round 的 `tags` 字段）
 2. Soft reset commits：
    ```bash
    cd <ROOT>/linux && git reset --soft docs-next
    ```
-3. 对每个文件重新 commit，带 Reviewed-by tag
+3. 对每个文件重新 commit，带收集到的标签（Reviewed-by、Acked-by 等）
 4. 重新 format-patch：
    ```bash
    cd <ROOT> && python3 bin/kt-format-patch --series <id> --json

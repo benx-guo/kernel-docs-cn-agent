@@ -92,6 +92,9 @@ def do_list(use_json):
         print(f"  版本: {version}")
         if action_count:
             print(f"  待处理: {action_count} 个 action items")
+        follow_up = s.get("follow_up", [])
+        if follow_up:
+            print(f"  后续任务: {len(follow_up)} 个")
         print()
 
 
@@ -133,11 +136,19 @@ def do_show(series_id, use_json):
         for num in sorted(per_patch.keys(), key=lambda x: int(x)):
             p = per_patch[num]
             icon = STATUS_ICON.get(p["status"], "?")
-            rb = ", ".join(p.get("reviewed_by", []))
-            rb_str = f"  [Reviewed-by: {rb}]" if rb else ""
-            print(f"  {icon} {num}: {p['file']}  ({p['status']}){rb_str}")
+            tags = p.get("tags", p.get("reviewed_by", []))
+            tags_str = f"  [Tags: {', '.join(tags)}]" if tags else ""
+            print(f"  {icon} {num}: {p['file']}  ({p['status']}){tags_str}")
             for item in p.get("action_items", []):
                 print(f"      → {item}")
+
+    # Follow-up tasks
+    follow_up = s.get("follow_up", [])
+    if follow_up:
+        print("\n后续任务:")
+        for fu in follow_up:
+            waiting = f" (等待: {fu['waiting_for']})" if fu.get("waiting_for") else ""
+            print(f"  - {fu.get('file', '?')}: {fu.get('description', '?')}{waiting}")
 
     # Round history
     all_rounds = []
@@ -533,13 +544,13 @@ def do_dashboard(use_json):
         if rounds:
             latest = rounds[-1]
             per_patch = latest.get("per_patch", {})
-            print("| # | 文件 | 状态 | Reviewed-by |")
-            print("|---|------|------|-------------|")
+            print("| # | 文件 | 状态 | Tags |")
+            print("|---|------|------|------|")
             for num in sorted(per_patch.keys(), key=lambda x: int(x)):
                 p = per_patch[num]
                 icon = STATUS_ICON.get(p["status"], "?")
-                rb = ", ".join(p.get("reviewed_by", [])) or "—"
-                print(f"| {num} | {p['file']} | {icon} {p['status']} | {rb} |")
+                tags = ", ".join(p.get("tags", p.get("reviewed_by", []))) or "—"
+                print(f"| {num} | {p['file']} | {icon} {p['status']} | {tags} |")
             print()
 
             # Action items
@@ -552,6 +563,15 @@ def do_dashboard(use_json):
                 for item in items:
                     print(item)
                 print()
+
+        # Follow-up tasks
+        follow_up = s.get("follow_up", [])
+        if follow_up:
+            print("后续任务:")
+            for fu in follow_up:
+                waiting = f" (等待: {fu['waiting_for']})" if fu.get("waiting_for") else ""
+                print(f"- {fu.get('file', '?')}: {fu.get('description', '?')}{waiting}")
+            print()
 
         # Lifecycle bar
         idx = PHASE_INDEX.get(phase, 0)

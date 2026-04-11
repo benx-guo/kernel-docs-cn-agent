@@ -26,6 +26,14 @@ cd <ROOT> && python3 bin/kt-mail --thread "<id_or_url>" [--local] --json
 
 用中文总结审核意见。
 
+### 关联 series 更新
+
+如果查看的线程属于某个活跃 series（通过 cover_message_id 匹配），总结完回复后：
+
+1. 提取每个补丁的标签（Reviewed-by / Acked-by 等）和修改意见
+2. 提议更新 series-state.json 中对应 round 的 per_patch 数据
+3. 用户确认后，直接编辑 data/series-state.json 更新状态
+
 ## 模式 4：`--reply <id|url>` — 起草回复（AI 处理）
 
 这个模式由 AI 自行处理：

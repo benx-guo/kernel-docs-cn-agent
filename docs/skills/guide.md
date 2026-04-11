@@ -859,10 +859,13 @@ prompt: "根据评审意见修改 linux/Documentation/translations/zh_CN/<contex
 **收到 Reviewed-by 时**：
 
 ```
-✓ 收到 **Reviewed-by** 标签！内审通过。
+✓ 收到审阅标签！内审通过。
 
-格式：`Reviewed-by: Name <email>`
-这个标签会写入补丁，表示有人审阅并认可了你的翻译。
+常见标签格式：
+- `Reviewed-by: Name <email>` — 审阅通过
+- `Acked-by: Name <email>` — 确认认可
+
+这些标签会写入补丁，表示有人审阅并认可了你的翻译。
 
 下一步正式提交到邮件列表。
 ```
@@ -908,7 +911,7 @@ prompt: "执行 /series --show <context.series_id> 技能。汇报当前 series 
 
 ### 步骤 1：正式提交到邮件列表（Work Stage 9: E3）
 
-如果从内审推进，先收集 Reviewed-by 并重新 commit、format-patch。
+如果从内审推进，先收集标签（Reviewed-by、Acked-by 等）并重新 commit、format-patch。
 
 ```markdown
 ━━━━━━━━━━━━━━━ Step 8/8 · E3 ━━━━━━━━━━━━━━━
