@@ -94,7 +94,7 @@ Commit message 格式参见 `docs/commit-format.md`。
 获取英文原文当前 commit 信息：
 
 ```bash
-cd <ROOT>/linux && git log -1 --format="%h (\"%s\")" -- Documentation/<文件路径>
+cd <ROOT>/linux && git log -1 --no-merges --format="%h (\"%s\")" -- Documentation/<文件路径>
 ```
 
 获取 git 身份：

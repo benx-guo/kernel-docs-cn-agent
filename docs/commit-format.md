@@ -54,6 +54,9 @@ Signed-off-by: Zhang San <zhangsan@example.com>
 - Use `Add` in the subject for new translations; use `Update` for revisions.
 - The through-commit hash and subject must refer to the **latest commit** that
   touched the English source file at the time of translation.
+- **不能引用 merge commit**。必须找到实际修改文件内容的 commit。
+  例如 `a592a36e4937 ("Documentation: use a source-read extension ...")` 是正确的，
+  而 `a9aabb3b839a ("Merge tag 'rust-6.20-7.0' ...")` 是错误的。
 - The `Signed-off-by` line uses the name and email from your git configuration.
 - When a patch receives review tags (`Reviewed-by`, `Acked-by`, etc.) during
   review, insert them on separate lines immediately **before** the
