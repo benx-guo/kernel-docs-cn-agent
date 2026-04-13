@@ -16,11 +16,17 @@ python3 bin/kt-setup    # 克隆 docs-next 分支，检查依赖
 
 ## 使用方式
 
-### AI 工具
+### Claude Code
+
+```bash
+./kt    # 初始化配置（CLAUDE.md、commands、权限），然后启动 claude
+```
+
+首次运行会从 `config/claude-settings.example.json` 生成权限配置。进入后用 `/guide` 开始交互式引导。
+
+### 其他 AI 工具
 
 将 `docs/guide.md` 加入上下文作为入口。`docs/skills/` 下的 10 个操作指引是纯 Markdown，任何 AI 工具都能直接读取。AI 调用 `bin/` CLI 处理数据，自身负责翻译和交互。
-
-新手可运行 `./kt` 查看可用命令，或使用 `/guide` 进入交互式引导。
 
 ### 纯 CLI
 

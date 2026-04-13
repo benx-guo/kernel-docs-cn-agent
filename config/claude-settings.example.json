@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:www.kernel.org)",
+      "WebFetch(domain:git.kernel.org)",
+      "WebFetch(domain:docs.kernel.org)",
+      "WebFetch(domain:lore.kernel.org)",
+      "Bash(python3 bin/kt-*)",
+      "Bash(cd * && python3 bin/kt-*)",
+      "Bash(cd linux && git *)",
+      "Bash(cd linux && perl scripts/get_maintainer.pl *)",
+      "Bash(cd linux && perl scripts/checkpatch.pl *)",
+      "Bash(cd linux && make htmldocs *)",
+      "Bash(python3 -c *)",
+      "Bash(python3 scripts/diff-web.py *)",
+      "Bash(python3 scripts/serve-docs.py *)",
+      "Bash(python3 scripts/series-dashboard.py)",
+      "Bash(which *)",
+      "Bash(mkdir -p *)",
+      "Bash(chmod +x *)",
+      "Bash(rm -rf outgoing && mkdir -p outgoing)",
+      "Bash(ls outgoing/*.patch *)",
+      "Bash(test *)",
+      "Bash(curl -s -A \"kernel-translations-agent/1.0\" *)",
+      "Bash(git clone --branch docs-next *)",
+      "Bash(git send-email *)",
+      "Bash(git config *)",
+      "Bash(mbsync *)",
+      "Bash(notmuch *)",
+      "Skill(diff)",
+      "Skill(translate)",
+      "Skill(guide)"
+    ]
+  }
+}

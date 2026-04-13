@@ -2,13 +2,18 @@
 # kt - Linux 内核中文翻译工具集入口
 cd "$(dirname "$0")"
 
-# Generate CLAUDE.md and .claude/commands/ (skip if already correct)
+# Generate CLAUDE.md, .claude/commands/, and settings (skip if already correct)
 ensure_link() { [ "$(readlink "$2" 2>/dev/null)" = "$1" ] || ln -sf "$1" "$2"; }
 ensure_link docs/guide.md CLAUDE.md
 mkdir -p .claude/commands
 for skill in docs/skills/*.md; do
   ensure_link "../../$skill" ".claude/commands/$(basename "$skill")"
 done
+# Seed settings from example if not yet configured
+if [ ! -f .claude/settings.local.json ]; then
+  cp config/claude-settings.example.json .claude/settings.local.json
+  echo "已从 config/claude-settings.example.json 初始化权限配置。"
+fi
 
 cat <<'EOF'
 Linux 内核中文翻译工具集
