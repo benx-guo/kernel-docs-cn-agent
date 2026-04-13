@@ -8,31 +8,20 @@
 
 ## 确认规则（所有模式通用）
 
-**禁止自动加 `--confirm`。** 所有模式都必须：
-1. 先不带 `--confirm` 运行，展示预览（收件人、补丁列表）
-2. 等用户明确回复"确认"/"发送"/"ok"后，才加 `--confirm` 重新执行
+**禁止 Claude 执行发送。** 所有模式都必须：
+1. 先不带 `--confirm` 运行，获取预览（收件人、补丁列表、`command` 字段）
+2. 展示预览信息给用户
+3. 从 JSON 输出的 `command` 字段提取 `git send-email` 原始命令，贴给用户自己执行
 
 ## 模式 1：`--self`（发给自己测试）
-
-### 1a. 预览
 
 ```bash
 cd <ROOT> && python3 bin/kt-send-patch --self [额外参数] --json
 ```
 
-展示收件人和补丁列表，等用户确认。
-
-### 1b. 用户确认后发送
-
-```bash
-cd <ROOT> && python3 bin/kt-send-patch --self --confirm [额外参数] --json
-```
-
-发送后提示用户检查邮箱确认格式。
+展示收件人和补丁列表，把 `command` 字段的 `git send-email` 命令贴给用户执行。发送后提示用户检查邮箱确认格式。
 
 ## 模式 2：`--review <email>`（发给内审人员）
-
-### 2a. 预览
 
 确认 review 邮箱地址后：
 
@@ -40,40 +29,22 @@ cd <ROOT> && python3 bin/kt-send-patch --self --confirm [额外参数] --json
 cd <ROOT> && python3 bin/kt-send-patch --review <email> [额外参数] --json
 ```
 
-展示收件人和补丁列表，等用户确认。
-
-### 2b. 用户确认后发送
-
-```bash
-cd <ROOT> && python3 bin/kt-send-patch --review <email> --confirm [额外参数] --json
-```
+展示收件人和补丁列表，把 `command` 字段的 `git send-email` 命令贴给用户执行。
 
 ## 模式 3：`--submit`（正式提交到邮件列表）
 
 **警告**：将发到公开邮件列表。
 
-### 3a. 先 dry-run 预览
-
 ```bash
-cd <ROOT> && python3 bin/kt-send-patch --submit --dry-run [额外参数] --json
+cd <ROOT> && python3 bin/kt-send-patch --submit [额外参数] --json
 ```
 
-展示完整收件人列表和补丁列表。
-
-### 3b. 用户确认
-
-明确告知用户：
+展示完整收件人列表和补丁列表，明确告知用户：
 - **会发送到公开邮件列表**（linux-doc@vger.kernel.org）
 - 完整收件人列表
 - 补丁列表
 
-### 3c. 正式发送
-
-用户明确确认后：
-
-```bash
-cd <ROOT> && python3 bin/kt-send-patch --submit [额外参数] --json
-```
+把 `command` 字段的 `git send-email` 命令贴给用户执行。
 
 ## Series 集成
 
