@@ -5,6 +5,8 @@
 > **路径约定**：`<ROOT>` 为项目根目录（包含 `docs/` 和 `bin/` 的目录）。
 > 每条命令用 `cd <ROOT> && ...` 显式切换。
 
+每个阶段必须与用户交互确认后再继续。直接输出编号选项，等待用户文字回复。当用户回复为空或不明确时，停下来再次确认，不要自行假设用户意图。
+
 ---
 
 ## 参数
@@ -427,7 +429,9 @@ prompt: "执行 /series --create 技能。汇报创建的 series ID 和工作分
 ### 过渡
 
 ```
-✓ 目标文件已选定！Series 已创建，工作分支：`zh-work/<id>`。
+✓ 目标文件已选定！Series 已创建：
+  工作分支：`zh-work/<id>`
+  Worktree：`worktrees/<id>/`
 下一步开始翻译。
 
 [c] 继续  [p] 暂停（下次 /guide 恢复）
@@ -441,7 +445,7 @@ prompt: "执行 /series --create 技能。汇报创建的 series ID 和工作分
 
 ### 操作
 
-确保已在 series 分支 `zh-work/<context.series_id>` 上。用 Agent 委托执行 `/translate`：
+翻译文件在 worktree 目录 `worktrees/<context.series_id>/` 中（工具自动定位）。用 Agent 委托执行 `/translate`：
 
 ```
 使用 Agent 工具，对 <context.chosen_files> 中的每个文件执行 /translate 技能。
