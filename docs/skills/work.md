@@ -49,7 +49,43 @@
 
 文件路径相对于 `Documentation/`。
 
-### 无参数时的文件选择流程
+### 无参数时的流程
+
+**Step 0：检查进行中的任务**
+
+在文件选择之前，先查询是否有进行中的系列：
+
+```bash
+cd <ROOT> && python3 bin/kt-series --list --json
+```
+
+如果有活跃 series（phase 不是 merged），为每个 series 获取文件的 workflow stage：
+
+```bash
+cd <ROOT> && python3 bin/kt-work --stage <file> --json
+```
+
+展示仪表盘：
+
+```
+📋 进行中的任务：
+
+  Series: <id>
+  ├ 文件: <file>
+  ├ 阶段: <N> — <name>（<阶段描述>）
+  ├ 内审: <status>
+  └ 上游: <status>
+
+  ...
+```
+
+然后让用户选择：
+- **继续进行中的任务** — 从该 series 的当前 stage 恢复
+- **开始新翻译** — 进入文件选择流程（Step 1+）
+
+如果没有活跃 series，直接进入文件选择流程。
+
+---
 
 禁止自动选择。必须让用户从列表中挑选。
 
@@ -118,13 +154,17 @@ cd <ROOT> && python3 bin/kt-work --set <file> <N>
 
 ---
 
-## 分支管理
+## 分支与 Worktree 管理
 
-每个 series 有独立的工作分支 `zh-work/<series-id>`，由 `kt-series --create` 自动创建。流水线阶段切换时自动切到对应分支（切分支前检查工作区干净）。
+每个 series 有独立的 worktree `worktrees/<series-id>/`（由 `kt-series --create` 自动创建），
+对应分支 `zh-work/<series-id>`。主 repo `linux/` 始终保持在 `docs-next`。
+
+并行工作时，各 series 的 worktree 互不干扰。翻译、质检、补丁生成等操作
+在对应 worktree 中执行（工具自动定位）。
 
 ## 恢复机制
 
-每个文件开始前，先读取 workflow-state，如果返回非 0 stage，从该 stage 恢复。根据 series-id 自动切到对应分支。向用户汇报恢复点，确认是否继续。
+每个文件开始前，先读取 workflow-state，如果返回非 0 stage，从该 stage 恢复。根据 series-id 从 series-state.json 读取 worktree 路径，直接在对应 worktree 中恢复。向用户汇报恢复点，确认是否继续。
 
 ---
 
