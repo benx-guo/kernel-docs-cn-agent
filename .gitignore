@@ -4,6 +4,9 @@ linux/
 # Generated patches
 outgoing/
 
+# Per-series git worktrees
+worktrees/
+
 # Claude auto-memory (user-specific)
 memory/
 

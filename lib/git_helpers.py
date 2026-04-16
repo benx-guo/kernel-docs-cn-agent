@@ -329,6 +329,49 @@ def rebase_onto(base: str = "docs-next",
 
 # ── Format-patch ────────────────────────────────────────────────────
 
+def add_worktree(path: str | Path, branch: str,
+                 cwd: str | Path | None = None) -> None:
+    """Create a git worktree at *path* checking out *branch*."""
+    r = git("worktree", "add", str(path), branch, cwd=cwd)
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"git worktree add {path} {branch} failed: {r.stderr.strip()}")
+
+
+def remove_worktree(path: str | Path,
+                    cwd: str | Path | None = None) -> None:
+    """Remove a git worktree at *path*."""
+    r = git("worktree", "remove", str(path), cwd=cwd)
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"git worktree remove {path} failed: {r.stderr.strip()}")
+
+
+def list_worktrees(cwd: str | Path | None = None) -> list[dict]:
+    """Return list of worktrees as [{"worktree": path, "branch": name}, ...].
+
+    Parses ``git worktree list --porcelain`` output.
+    """
+    raw = git_stdout("worktree", "list", "--porcelain", cwd=cwd)
+    result: list[dict] = []
+    entry: dict = {}
+    for line in raw.splitlines():
+        if not line.strip():
+            if entry:
+                result.append(entry)
+                entry = {}
+            continue
+        if line.startswith("worktree "):
+            entry["worktree"] = line[len("worktree "):]
+        elif line.startswith("branch "):
+            # "branch refs/heads/zh-work/foo" → "zh-work/foo"
+            ref = line[len("branch "):]
+            entry["branch"] = ref.removeprefix("refs/heads/")
+    if entry:
+        result.append(entry)
+    return result
+
+
 def format_patch(
     base: str = "docs-next",
     tip: str = "HEAD",

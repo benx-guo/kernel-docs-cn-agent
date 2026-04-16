@@ -27,6 +27,7 @@ Series state is stored in `data/series-state.json`:
       "subject": "commit subject prefix",
       "files": ["path/relative/to/zh_CN/"],
       "commits": ["hash1", "hash2"],
+      "worktree": "worktrees/<series-id>",
       "phase": "internal_review | upstream | merged",
       "follow_up": [
         {"file": "path", "description": "...", "waiting_for": "..."}

@@ -83,6 +83,16 @@ def diff_cache_path() -> Path:
     return data_dir() / "diff-cache.json"
 
 
+def worktrees_dir() -> Path:
+    """Return <root>/worktrees/ — base directory for series worktrees."""
+    return root() / "worktrees"
+
+
+def series_worktree(series_id: str) -> Path:
+    """Return <root>/worktrees/<series-id>/ — worktree for a specific series."""
+    return worktrees_dir() / series_id
+
+
 def zh_cn_dir() -> Path:
     """Return the zh_CN translation base directory inside the kernel tree."""
     return kernel_dir() / "Documentation" / "translations" / "zh_CN"

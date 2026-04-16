@@ -110,7 +110,7 @@ def create_series(
     subject: str,
     files: list[str],
     commits: list[str],
-    branch: str | None = None,
+    worktree: str | None = None,
 ) -> None:
     """Create a new series entry in pending internal_review state."""
     p = Path(path)
@@ -125,8 +125,8 @@ def create_series(
             "upstream": {"status": "pending", "rounds": []},
         },
     }
-    if branch:
-        entry["branch"] = branch
+    if worktree:
+        entry["worktree"] = worktree
     data.setdefault("series", {})[series_id] = entry
     _save(p, data)
 

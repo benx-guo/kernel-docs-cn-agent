@@ -23,11 +23,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from lib.project import kernel_dir, outgoing_dir, series_state_path
+from lib.project import kernel_dir, outgoing_dir, series_state_path, root, worktrees_dir, series_worktree
 from lib.git_helpers import (
     git, git_lines, git_stdout, current_branch, branch_exists, create_branch,
     checkout, delete_branch, work_branch_name, series_id_from_branch,
-    is_work_branch, is_ancestor,
+    is_work_branch, is_ancestor, add_worktree, remove_worktree,
 )
 from lib.state import (
     load_series_state, save_series_state, list_active_series,
@@ -85,8 +85,8 @@ def do_list(use_json):
 
         print(f"{sid}")
         print(f"  主题: {s.get('subject', '?')}")
-        if s.get("branch"):
-            print(f"  分支: {s['branch']}")
+        if s.get("worktree"):
+            print(f"  Worktree: {s['worktree']}")
         print(f"  阶段: {phase} / {status}")
         print(f"  文件: {len(s.get('files', []))} 个")
         print(f"  版本: {version}")
@@ -119,8 +119,8 @@ def do_show(series_id, use_json):
 
     print(f"系列: {series_id}")
     print(f"主题: {s.get('subject', '?')}")
-    if s.get("branch"):
-        print(f"分支: {s['branch']}")
+    if s.get("worktree"):
+        print(f"Worktree: {s['worktree']}")
     print(f"阶段: {phase} / {phase_data.get('status', '?')}")
     print(f"文件: {', '.join(s.get('files', []))}")
     print(f"Commits: {', '.join(s.get('commits', []))}")
@@ -164,11 +164,13 @@ def do_show(series_id, use_json):
 
 def do_create(use_json):
     """Create a new series from current commits and outgoing patches."""
+    kd = kernel_dir()
+
     # Check for commits on current branch (or docs-next..HEAD)
-    commits = git_lines("log", "--oneline", "docs-next..HEAD")
+    commits = git_lines("log", "--oneline", "docs-next..HEAD", cwd=kd)
 
     # Extract files from commits (may be empty if creating before committing)
-    files_raw = git_lines("log", "--name-only", "--format=", "docs-next..HEAD") if commits else []
+    files_raw = git_lines("log", "--name-only", "--format=", "docs-next..HEAD", cwd=kd) if commits else []
     zh_files = sorted(set(
         f.replace("Documentation/translations/zh_CN/", "")
         for f in files_raw
@@ -207,44 +209,45 @@ def do_create(use_json):
 
     # Create work branch zh-work/<series-id> from docs-next
     branch = work_branch_name(series_id)
-    if not branch_exists(branch):
-        create_branch(branch, base="docs-next")
+    if not branch_exists(branch, cwd=kd):
+        create_branch(branch, base="docs-next", cwd=kd)
 
-    # If current branch has commits for this module, cherry-pick them
-    orig_branch = current_branch()
-    if commits and orig_branch != branch:
-        checkout(branch)
+    # Create worktree for this series
+    wt_path = series_worktree(series_id)
+    wt_rel = f"worktrees/{series_id}"
+    worktrees_dir().mkdir(parents=True, exist_ok=True)
+    add_worktree(wt_path, branch, cwd=kd)
+
+    # If current branch has commits for this module, cherry-pick them into the worktree
+    if commits:
         for h in reversed(commit_hashes):
-            from lib.git_helpers import git
-            r = git("cherry-pick", h)
+            r = git("cherry-pick", h, cwd=wt_path)
             if r.returncode != 0:
                 # Abort failed cherry-pick and continue
-                git("cherry-pick", "--abort")
-        # Re-read commits on the new branch
-        new_commits = git_lines("log", "--oneline", "docs-next..HEAD")
+                git("cherry-pick", "--abort", cwd=wt_path)
+        # Re-read commits on the worktree branch
+        new_commits = git_lines("log", "--oneline", "docs-next..HEAD", cwd=wt_path)
         commit_hashes = [line.split()[0] for line in new_commits]
-    elif not commits:
-        # No commits yet, just switch to the new branch
-        checkout(branch)
 
     create_series(series_state_path(), series_id, subject, zh_files,
-                  commit_hashes, branch=branch)
+                  commit_hashes, worktree=wt_rel)
 
     result = {"id": series_id, "subject": subject, "files": zh_files,
-              "commits": commit_hashes, "branch": branch}
+              "commits": commit_hashes, "branch": branch,
+              "worktree": wt_rel}
 
     if use_json:
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
         print(f"已创建系列: {series_id}")
-        print(f"  分支: {branch}")
+        print(f"  Worktree: {wt_path}")
         print(f"  主题: {subject}")
         print(f"  文件: {len(zh_files)} 个")
         print(f"  Commits: {len(commit_hashes)} 个")
 
 
 def do_delete(series_id, use_json):
-    """Delete a series and its work branch."""
+    """Delete a series, its worktree, and its work branch."""
     s = get_series(series_state_path(), series_id)
     if not s:
         msg = f"系列 '{series_id}' 不存在"
@@ -254,25 +257,39 @@ def do_delete(series_id, use_json):
             print(msg, file=sys.stderr)
         sys.exit(1)
 
-    branch = s.get("branch")
+    branch = work_branch_name(series_id)
     branch_deleted = False
+    worktree_removed = False
+    kd = kernel_dir()
 
-    # Switch away from the branch if we're on it
-    if branch and branch_exists(branch):
-        cur = current_branch()
+    # Remove worktree first (must happen before branch deletion)
+    wt_rel = s.get("worktree")
+    if wt_rel:
+        wt_abs = root() / wt_rel
+        if wt_abs.is_dir():
+            remove_worktree(wt_abs, cwd=kd)
+            worktree_removed = True
+
+    # Delete branch
+    if branch_exists(branch, cwd=kd):
+        cur = current_branch(cwd=kd)
         if cur == branch:
-            checkout("docs-next")
-        delete_branch(branch)
+            checkout("docs-next", cwd=kd)
+        delete_branch(branch, cwd=kd)
         branch_deleted = True
 
     # Remove series from state
     delete_series(series_state_path(), series_id)
 
-    result = {"id": series_id, "deleted": True, "branch_deleted": branch_deleted}
+    result = {"id": series_id, "deleted": True,
+              "branch_deleted": branch_deleted,
+              "worktree_removed": worktree_removed}
     if use_json:
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
         print(f"已删除系列: {series_id}")
+        if worktree_removed:
+            print(f"  已删除 Worktree: {wt_rel}")
         if branch_deleted:
             print(f"  已删除分支: {branch}")
 
@@ -339,7 +356,7 @@ def do_advance(series_id, use_json):
         update_series_field(ssp, series_id, phase="merged")
         update_phase_status(ssp, series_id, "upstream", "merged")
 
-        branch = s.get("branch")
+        branch = work_branch_name(series_id)
         result = {"id": series_id, "action": "advance",
                   "from": "upstream", "to": "merged",
                   "branch": branch}
@@ -348,8 +365,7 @@ def do_advance(series_id, use_json):
         else:
             print(f"已推进: {series_id}")
             print(f"  upstream → merged")
-            if branch:
-                print(f"  工作分支 {branch} 仍保留，可用 --delete {series_id} 清理")
+            print(f"  工作分支 {branch} 仍保留，可用 --delete {series_id} 清理")
 
     elif phase == "merged":
         msg = "该系列已经是 merged 状态。"
@@ -398,24 +414,33 @@ def do_diff(series_id, use_json):
             print(msg, file=sys.stderr)
         sys.exit(1)
 
-    # Switch to series branch if needed
-    branch = s.get("branch")
-    orig_branch = current_branch()
-    if branch and orig_branch != branch:
-        checkout(branch)
+    # Determine working directory: use worktree if available, else fallback
+    wt_rel = s.get("worktree")
+    branch = work_branch_name(series_id)
+    if wt_rel:
+        wt_cwd = root() / wt_rel
+    elif branch:
+        orig_branch = current_branch(cwd=kernel_dir())
+        if orig_branch != branch:
+            checkout(branch, cwd=kernel_dir())
+        wt_cwd = kernel_dir()
+    else:
+        wt_cwd = kernel_dir()
 
-    cur_tip = git_stdout("log", "-1", "--format=%H")
+    cur_tip = git_stdout("log", "-1", "--format=%H", cwd=wt_cwd)
 
     # Build range-diff args
     # If prev round has a custom base (e.g. migrated from monolithic branch),
     # use base..tip for the left side; otherwise use docs-next..tip
     left_base = prev_base or "docs-next"
-    r = git("range-diff", f"{left_base}..{prev_tip}", f"docs-next..{cur_tip}")
+    r = git("range-diff", f"{left_base}..{prev_tip}", f"docs-next..{cur_tip}", cwd=wt_cwd)
     range_diff = r.stdout
 
-    # Switch back
-    if branch and orig_branch != branch:
-        checkout(orig_branch)
+    # Switch back if we did a checkout (no worktree case)
+    if not wt_rel and branch:
+        cur = current_branch(cwd=kernel_dir())
+        if cur != "docs-next" and cur == branch:
+            checkout(orig_branch, cwd=kernel_dir())
 
     if use_json:
         print(json.dumps({
@@ -484,7 +509,7 @@ def do_current(use_json):
         result = {
             "series_id": sid,
             "subject": s.get("subject", ""),
-            "branch": s.get("branch", ""),
+            "branch": work_branch_name(sid),
             "phase": phase,
             "status": status,
             "files": s.get("files", []),
@@ -534,6 +559,8 @@ def do_dashboard(use_json):
         print(f"|------|----|")
         print(f"| 阶段 | {phase} |")
         print(f"| 状态 | {phase_data.get('status', '?')} |")
+        if s.get("worktree"):
+            print(f"| Worktree | `{s['worktree']}` |")
         print(f"| 文件 | {len(s.get('files', []))} 个 |")
         if rounds:
             latest = rounds[-1]

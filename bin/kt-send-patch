@@ -24,7 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib.project import root, kernel_dir, outgoing_dir, series_state_path, config_dir
-from lib.git_helpers import user_email, series_id_from_branch, is_work_branch
+from lib.git_helpers import user_email, series_id_from_branch, is_work_branch, git_stdout
 from lib.patch import run_get_maintainer
 from lib.state import load_series_state, get_series, add_round
 
@@ -79,7 +79,7 @@ def load_email_conf():
 
 
 def send_email(to_list, cc_list, patches, dry_run=False, in_reply_to=None,
-               suppress_cc=False):
+               suppress_cc=False, cwd=None):
     """Build and run git send-email command. Returns (returncode, stdout, stderr)."""
     cmd = ["git", "send-email"]
     for addr in to_list:
@@ -97,7 +97,7 @@ def send_email(to_list, cc_list, patches, dry_run=False, in_reply_to=None,
         cmd += [f"--in-reply-to=<{mid}>"]
     cmd += [str(p) for p in patches]
 
-    r = subprocess.run(cmd, cwd=kernel_dir(), capture_output=True, text=True)
+    r = subprocess.run(cmd, cwd=str(cwd or kernel_dir()), capture_output=True, text=True)
     return r.returncode, r.stdout, r.stderr
 
 
@@ -181,12 +181,16 @@ def main():
         idx = args.index("--in-reply-to")
         in_reply_to = args[idx + 1] if idx + 1 < len(args) else None
 
-    # Read series phase for patch lookup
+    # Read series phase and worktree for patch lookup
     phase = None
+    send_cwd = None  # worktree path for git send-email
     if series_id:
         s = get_series(series_state_path(), series_id)
         if s:
             phase = s.get("phase")
+            wt_rel = s.get("worktree")
+            if wt_rel:
+                send_cwd = root() / wt_rel
 
     # Check prerequisites
     patches = find_patches(series_id=series_id, phase=phase)
@@ -338,7 +342,7 @@ def main():
                 print(f"  In-Reply-To: {in_reply_to}")
             if series_id:
                 print(f"  系列: {series_id}")
-            print(f"\n  cd {kernel_dir()}")
+            print(f"\n  cd {send_cwd or kernel_dir()}")
             print(f"  {send_cmd}")
             if mode == "submit":
                 print(f"\n请在内核目录下手动执行以上命令。")
@@ -350,7 +354,7 @@ def main():
     is_dry = dry_run
     rc, stdout, stderr = send_email(to_list, cc_list, patches,
                                     dry_run=is_dry, in_reply_to=in_reply_to,
-                                    suppress_cc=True)
+                                    suppress_cc=True, cwd=send_cwd)
 
     result["returncode"] = rc
     result["stdout"] = stdout
@@ -359,9 +363,8 @@ def main():
 
     # Update series state for review sends
     if rc == 0 and not is_dry and series_id and mode == "review":
-        from lib.git_helpers import git_stdout
         mid = extract_message_id(stdout + stderr)
-        tip = git_stdout("log", "-1", "--format=%H")
+        tip = git_stdout("log", "-1", "--format=%H", cwd=send_cwd)
         version = add_round(series_state_path(), series_id,
                             cover_message_id=mid, tip=tip)
         result["series_version"] = version

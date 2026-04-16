@@ -24,7 +24,7 @@ from lib.project import (
     glossary_path, workflow_state_path, series_state_path,
 )
 from lib.state import load_workflow_state, load_series_state
-from lib.git_helpers import list_work_branches
+from lib.git_helpers import list_work_branches, work_branch_name
 from lib.diff import get_status_cached
 
 
@@ -140,7 +140,7 @@ def get_status():
             st = s["phases"].get(phase, {}).get("status", "?")
             active.append({"id": sid, "phase": phase, "status": st,
                            "files": len(s.get("files", [])),
-                           "branch": s.get("branch", "")})
+                           "branch": work_branch_name(sid)})
     status["active_series"] = active
 
     # Work branches
