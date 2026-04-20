@@ -307,6 +307,38 @@ def is_ancestor(commit: str, branch: str = "docs-next",
     return r.returncode == 0
 
 
+def is_patch_merged(commit: str, branch: str = "docs-next",
+                    cwd: str | Path | None = None) -> bool:
+    """Check if a patch has been merged into *branch*.
+
+    Email-submitted patches get a new commit hash when applied by the
+    maintainer, so ``is_ancestor`` will always return False.  Instead we
+    first try ``is_ancestor`` (covers cherry-pick / direct merge), then
+    fall back to searching *branch* for a commit with the same subject
+    line and author email.
+    """
+    # Fast path: exact commit is ancestor (e.g. local merge or cherry-pick
+    # that preserves the hash).
+    if is_ancestor(commit, branch, cwd=cwd):
+        return True
+
+    # Extract subject and author email from the local commit.
+    fmt = "%s%n%ae"
+    info = git_stdout("log", "-1", f"--format={fmt}", commit, cwd=cwd)
+    lines = info.splitlines()
+    if len(lines) < 2:
+        return False
+    subject, author_email = lines[0], lines[1]
+
+    # Search branch for a commit with matching subject and author.
+    matches = git_stdout(
+        "log", "--oneline", f"--author={author_email}",
+        f"--grep={subject}", "--fixed-strings",
+        branch, cwd=cwd,
+    )
+    return bool(matches.strip())
+
+
 # ── Rebase ─────────────────────────────────────────────────────────
 
 def needs_rebase(base: str = "docs-next",

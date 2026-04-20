@@ -27,7 +27,7 @@ from lib.project import kernel_dir, outgoing_dir, series_state_path, root, workt
 from lib.git_helpers import (
     git, git_lines, git_stdout, current_branch, branch_exists, create_branch,
     checkout, delete_branch, work_branch_name, series_id_from_branch,
-    is_work_branch, is_ancestor, add_worktree, remove_worktree,
+    is_work_branch, is_ancestor, is_patch_merged, add_worktree, remove_worktree,
 )
 from lib.state import (
     load_series_state, save_series_state, list_active_series,
@@ -342,7 +342,7 @@ def do_advance(series_id, use_json):
         commits = s.get("commits", [])
         all_merged = False
         if commits:
-            all_merged = all(is_ancestor(c, "docs-next") for c in commits)
+            all_merged = all(is_patch_merged(c, "docs-next") for c in commits)
 
         if not all_merged and commits:
             msg = "补丁尚未被 docs-next 合并。"

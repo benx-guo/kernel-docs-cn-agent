@@ -68,7 +68,12 @@ def main():
     # Sync: unconditionally update local docs-next to match remote
     kd = kernel_dir()
     branch = current_branch(cwd=kd)
-    git_stdout("fetch", "origin", "docs-next:docs-next", cwd=kd)
+    if branch == "docs-next":
+        # Can't fetch into the currently checked-out branch via refspec;
+        # use pull --ff-only instead.
+        git_stdout("pull", "--ff-only", "origin", "docs-next", cwd=kd)
+    else:
+        git_stdout("fetch", "origin", "docs-next:docs-next", cwd=kd)
     data = get_status_cached()
 
     if use_json:
